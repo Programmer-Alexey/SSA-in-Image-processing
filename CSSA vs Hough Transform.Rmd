@@ -1,0 +1,58 @@
+```{r}
+source("hough transform/hough_transform.r")
+source("hough transform/convolution.r")
+source("ssa-based methods/cssa-transform.r")
+```
+
+
+### Accuracy tests
+```{r}
+
+n_col <- 200
+n_row <- 200
+theta_step <- 1
+rho_step <- 1
+
+num_of_lines <- 2
+
+
+matrix <- matrix(0, ncol=n_col, nrow=n_row) |> add.line(a=1, b=20) |> add.line(a=-1, b=100)
+noizy_matrix <- matrix |> add.noise(sigma=0.2)
+
+# HT
+acum_result <- make_accumulator(noizy_matrix, detector = intensity_detector, theta_step = theta_step, rho_step=rho_step)
+
+accumulator <- acum_result$accumulator
+rho <- acum_result$rho
+theta <- acum_result$theta
+
+out <- detect_lines_nms(accumulator, rho, theta, num_of_lines, ncol=n_col, nrow=n_row)
+
+
+# CSSA
+m.col.col <- noizy_matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re()
+m.col.row <- noizy_matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.row() |> Re()
+m.row.col <- noizy_matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.col() |> Re()
+m.row.row <- noizy_matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.row() |> Re()
+
+norm <- function(matr){
+  sqrt(sum(matr*matr))
+}
+
+
+# parameters of gradient detector: thresold=2
+print("Errors")
+print(c("HT_nms", "m.col.col", "m.col.row", "m.row.col", "m.row.row" ))
+
+print(c(norm(out-matrix), norm(m.col.col-matrix), norm(m.col.row-matrix), norm(m.row.col-matrix), norm(m.row.row-matrix) ))
+
+plot.matrix(matrix)
+plot.matrix(out)
+#plot.matrix(Re(m.col.col), from.0.to.1 = T )
+plot.matrix(Re(m.col.row) , from.0.to.1 = T )
+#plot.matrix(Re(m.row.col) , from.0.to.1 = T)
+#plot.matrix(Re(m.row.row) , from.0.to.1 = T)
+
+```
+
+По результатам теста оказалось, что алгоритм m.col.row сработал эффективнее, однако там сыграл факт, что отрисовка нового результата производится с погрешностью, а в ssa мы не создаем новую матрицу. Еще я до конца не решил проблему с большим числом ненужных линий в HT, из-за чего иногда HT_nms рисует похожие линии. Уже придумал метрику, которой буду измерять ошибку, но не могу реализовать.
