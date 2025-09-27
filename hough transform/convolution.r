@@ -1,4 +1,9 @@
-convolution <- function(matr, kernel) { # this is a version with padding to avoid incorrect size of result matrix
+source("ssa-based methods/cssa-transform.r")
+library("Rcpp")
+sourceCpp("hough transform/convolution.cpp")
+
+
+convolution0 <- function(matr, kernel) { # this is a version with padding to avoid incorrect size of result matrix
   matr.ncol <- ncol(matr)
   matr.nrow <- nrow(matr)
   
@@ -29,14 +34,14 @@ convolution <- function(matr, kernel) { # this is a version with padding to avoi
 
 # Intensity
 intensity_detector_parameter <- 0.8
-intensity_detector <- function(matrix, threshold=intensity_detector_parameter){
+intensity_detector0 <- function(matrix, threshold=intensity_detector_parameter){
   matrix <- ifelse(matrix > quantile(matrix, threshold), matrix, 0)
   matrix
 }
 
 # Gradient
 gradient_detector_parameter <- 2
-intensity_gradient_detector <- function(matrix, threshold=gradient_detector_parameter){
+intensity_gradient_detector0 <- function(matrix, threshold=gradient_detector_parameter){
   sobel_x <- matrix(c(-1, 0, 1, 
                       -2, 0, 2, 
                       -1, 0, 1), 
@@ -49,7 +54,7 @@ intensity_gradient_detector <- function(matrix, threshold=gradient_detector_para
 }
 
 # Laplacian
-zero_crossings <- function(matrix) {
+zero_crossings0 <- function(matrix) {
   rows <- nrow(matrix)
   cols <- ncol(matrix)
   edges <- matrix(0, nrow = rows, ncol = cols)
@@ -66,7 +71,7 @@ zero_crossings <- function(matrix) {
   return(edges)
 }
 
-gaussian_kernel <- function(n, sigma){
+gaussian_kernel0 <- function(n, sigma){
   # size of kernel is odd
   
   kernel <- matrix(0, ncol=n, nrow=n)
@@ -83,7 +88,7 @@ gaussian_kernel <- function(n, sigma){
 }
 
 laplace_detector_parameter <- 2
-laplace_detector<- function(matrix, sigma=laplace_detector_parameter){
+laplace_detector0 <- function(matrix, sigma=laplace_detector_parameter){
   n <- as.integer(6*sigma) - 1
   gauss.kernel <- gaussian_kernel(n, sigma) 
   laplace_operator <- matrix(c(1, 4, 1,
@@ -92,3 +97,25 @@ laplace_detector<- function(matrix, sigma=laplace_detector_parameter){
   
   return(matrix |> convolution(gauss.kernel) |> convolution(laplace_operator) |> zero_crossings())
 }
+
+# CSSA Detector
+cssa_detector <- function(matrix, num_of_lines = 2, method = "row.row") {
+  if (method == "col.col") {
+    cleaned_matrix <- matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re()
+  } else if (method == "row.row") {
+    cleaned_matrix <- matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.row() |> Re()
+  } else if (method == "col.row") {
+    cleaned_matrix <- matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.row() |> Re()
+  } else if (method == "row.col") {
+    cleaned_matrix <- matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.col() |> Re()
+  }
+  
+  
+  cleaned_matrix <- ifelse(cleaned_matrix < 0, 0, ifelse(cleaned_matrix > 1, 1, cleaned_matrix))
+  threshold_value <- quantile(abs(cleaned_matrix), 0.8)
+  result_matrix <- ifelse(abs(cleaned_matrix) > threshold_value, cleaned_matrix, 0)
+  
+  return(result_matrix)
+}
+
+

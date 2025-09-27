@@ -1,6 +1,9 @@
 source("hough transform/convolution.r")
+library("Rcpp")
+sourceCpp("hough transform/make_accumulator.cpp")
 
-make_accumulator <- function(matrix, detector, theta_step = 1, rho_step = 1) {
+
+make_accumulator0 <- function(matrix, detector, theta_step = 1, rho_step = 1) {
   m <- detector(matrix)
   edge_points <- which(m > 0, arr.ind=T)
   
@@ -26,7 +29,9 @@ make_accumulator <- function(matrix, detector, theta_step = 1, rho_step = 1) {
   list(accumulator = accumulator, rho = rho, theta = theta)
 }
 
-detect_lines <- function(accumulator, quant_rho, quant_theta, N, ncol=100, nrow=100){
+
+sourceCpp("hough transform/detect_lines.cpp")
+detect_lines0 <- function(accumulator, quant_rho, quant_theta, N, ncol=100, nrow=100){
   
   eps <- 1/max(ncol, nrow)
   output <- matrix(0, ncol=ncol, nrow=nrow)
@@ -56,7 +61,6 @@ detect_lines <- function(accumulator, quant_rho, quant_theta, N, ncol=100, nrow=
   output
   
 }
-
 
 detect_lines_nms <- function(accumulator, quant_rho, quant_theta, N, ncol=100, nrow=100, suppression_window=6){
   eps <- 1/max(ncol, nrow)
@@ -91,6 +95,5 @@ detect_lines_nms <- function(accumulator, quant_rho, quant_theta, N, ncol=100, n
     
     accumulator_suppressed[row_min:row_max, col_min:col_max] <- 0
   }
-  
   output
 }
