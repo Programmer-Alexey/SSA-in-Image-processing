@@ -1,0 +1,144 @@
+Считаем разницу истинных параметров прямой $a$ и $b$ и их оценок. Здесь также используются 2 варианта: с подавлением окрестности около локального максимума и без.
+
+```{r}
+library(Rcpp)
+source("hough transform/hough_transform.r")
+source("hough transform/convolution.r")
+source("ssa-based methods/cssa-transform.r")
+
+
+library(transport)
+library(dplyr)
+library(tibble)
+```
+
+Матрица изображения
+
+```{r}
+n_col = 100
+n_row = 100
+
+matrix <- matrix(0, ncol=n_col, nrow=n_row) |> add.line(b=10) |> add.line(a=-0.5, b = 50)
+noisy_matrix <- matrix |> add.noise(sigma=0.2)
+
+```
+
+
+
+
+
+Для начала подготовим функции для нахождения k максимумов с локальным подавлением вокруг максимума и без.
+
+
+```{r}
+library(Rcpp)
+library(tibble)
+
+sourceCpp("hough_error.cpp")
+
+convert_ab_to_rho_theta <- function(a, b) {
+  
+  theta <- atan(-1 / a)
+  rho   <- b * sin(theta)
+  c(rho, theta)
+}
+
+hough_err <- function(img, detector_fun, use_nms = FALSE,
+                      theta_step = 1, rho_step = 1,
+                      true_lines_rt, num_of_lines = 2) {
+  m <- detector_fun(img)
+  idx <- which(m > 0, arr.ind = TRUE)
+  if (nrow(idx) == 0) return(c(NA_real_, NA_real_))
+  theta <- seq(0, pi, by = theta_step * pi/180)
+  acc <- hough_accumulator(idx, theta, rho_step)
+  compute_hough_error(
+    acc,
+    quant_rho   = seq(-nrow(acc)/2, nrow(acc)/2) * rho_step,
+    quant_theta = theta,
+    true_lines_rt = as.matrix(true_lines_rt),
+    k = num_of_lines,
+    is_suppression = use_nms,
+    suppression_window = 6
+  )
+}
+```
+
+
+
+Результаты:
+
+```{r}
+max_iter     <- 1
+theta_step   <- 1
+rho_step     <- 1
+num_of_lines <- 2
+
+true_lines <- data.frame(a = c(1, -0.5), b = c(10, 50))
+true_lines_rt <- as.data.frame(t(apply(
+  true_lines, 1,
+  function(row) convert_ab_to_rho_theta(row["a"], row["b"])
+)))
+
+err_rho        <- numeric(6)
+err_theta      <- numeric(6)
+err_rho_nms    <- numeric(6)
+err_theta_nms  <- numeric(6)
+
+methods <- c("row.row","col.col","row.col","col.row","Intensity","Gradient")
+detectors <- list(
+  function(m) cssa_detector(m, method="row.row"),
+  function(m) cssa_detector(m, method="col.col"),
+  function(m) cssa_detector(m, method="row.col"),
+  function(m) cssa_detector(m, method="col.row"),
+  intensity_detector,
+  intensity_gradient_detector
+)
+
+matrix <- matrix(0, ncol=n_col, nrow=n_row) |> add.line(b=10) |> add.line(a=-0.5, b = 50)
+
+
+for (iter in seq_len(max_iter)) {
+  
+  noisy_matrix <- matrix |> add.noise(sigma=0.2)
+  for (i in seq_along(methods)) {
+    e  <- hough_err(noisy_matrix, detectors[[i]], FALSE,
+                    theta_step, rho_step, true_lines_rt, num_of_lines)
+    eN <- hough_err(noisy_matrix, detectors[[i]], TRUE,
+                    theta_step, rho_step, true_lines_rt, num_of_lines)
+    if (!anyNA(e)) {
+      err_rho[i]   <- err_rho[i]   + e[1]
+      err_theta[i] <- err_theta[i] + e[2]
+    }
+    if (!anyNA(eN)) {
+      err_rho_nms[i]   <- err_rho_nms[i]   + eN[1]
+      err_theta_nms[i] <- err_theta_nms[i] + eN[2]
+    }
+  }
+}
+
+result <- tibble(
+  Method        = methods,
+  MeanRhoError  = err_rho  / max_iter,
+  MeanThetaError= err_theta / max_iter
+)
+
+result_nms <- tibble(
+  Method             = methods,
+  MeanRhoError_nms   = err_rho_nms  / max_iter,
+  MeanThetaError_nms = err_theta_nms / max_iter
+)
+
+print(result)
+print(result_nms)
+
+```
+
+
+```{r}
+library(tidyverse)
+true_lines_rt
+
+result |> mutate(MeanRhoError = MeanRhoError/7.071068^2, MeanThetaError=MeanThetaError / (0.7853982)^2 )
+result_nms |> mutate(MeanRhoError_nms = MeanRhoError_nms/7.071068^2, MeanThetaError_nms=MeanThetaError_nms / (0.7853982)^2)
+```
+
