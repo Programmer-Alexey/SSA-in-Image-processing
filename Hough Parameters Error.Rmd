@@ -1,9 +1,9 @@
-Считаем разницу истинных параметров прямой $a$ и $b$ и их оценок. Здесь также используются 2 варианта: с подавлением окрестности около локального максимума и без.
+Считаем разницу истинных параметров прямой $\rho$ и $\theta$ и их оценок. Здесь также используются 2 варианта: с подавлением окрестности около локального максимума и без.
 
 ```{r}
 library(Rcpp)
 source("hough transform/hough_transform.r")
-
+source("hough transform/convolution.r")
 
 
 library(transport)
@@ -17,24 +17,12 @@ library(tibble)
 n_col = 100
 n_row = 100
 
-detectors <- list(
-  function(m) cssa_detector(m, method="col.row"),
-  function(m) cssa_detector(m, method="row.row"),
-  intensity_detector,
-  intensity_gradient_detector
-)
-
 matrix <- matrix(0, ncol=n_col, nrow=n_row) |> add.line(b=10) |> add.line(a=-0.5, b = 50)
 noisy_matrix <- matrix |> add.noise(sigma=0.2)
 
 ```
 
-
-
-
-
-Для начала подготовим функции для нахождения k максимумов с локальным подавлением вокруг максимума и без.
-
+Для начала подготовим функции для нахождения k максимумов с локальным подавлением вокруг максимума и без, а также функцию вычисления ошибки.
 
 ```{r}
 library(tidyverse)
@@ -47,7 +35,6 @@ convert_ab_to_rho_theta <- function(a, b) {
   c(rho, theta)
 }
 
-# нахождение индексов k максимумов
 find_k_max <- function(acc, k, qrho, qtheta, suppress = FALSE, window = 6) {
   acc_copy <- acc
   maxima <- list()
@@ -67,7 +54,6 @@ find_k_max <- function(acc, k, qrho, qtheta, suppress = FALSE, window = 6) {
       acc_copy[idx[1], idx[2]] <- 0
     }
   }
-  # plot.matrix(acc_copy)
   do.call(rbind, maxima)
   }
 
@@ -99,66 +85,119 @@ compute_err <- function(true, pred) {
   return(c(dr = dr, dtheta = dtheta))
 }
 
+
+
+
+```
+Проверим на корректность
+
+```{r}
+params1 <- matrix(c(1, 2, 8, 9), ncol=2, nrow=2, byrow=T)
+params2 <- params1[c(2, 1), ]
+
+cat("Params 1: \n")
+params1
+
+cat("\nParams 2: \n")
+params2
+
+cat("\nIndicies of 2 maximums: \n")
+qrho = c(1, 2)
+qtheta = c(1, 2)
+k_maximums <- find_k_max(params1, 2, qrho, qtheta)
+k_maximums
+
+cat("\nDifference between params1 and params2\n")
+compute_err(params1, params2)
+
 ```
 
-Вычисление
+Итоговое вычисление
 ```{r}
 # Rprof("a.out")
-base_matrix <- matrix(0, ncol=n_col, nrow=n_row) |> 
-  add.line(a=2, b=10) |> 
-  add.line(a=-1, b=80) 
+base_matrix <- matrix(0, ncol = n_col, nrow = n_row) |> 
+  add.line(a = 2, b = 10) |> 
+  add.line(a = -1, b = 80)
+
+detectors <- list(
+  function(m) cssa_detector(m, num_of_lines = 2, method = "row.row"),
+  function(m) cssa_detector(m, num_of_lines = 2, method = "col.row"),
+  intensity_detector,
+  intensity_gradient_detector
+)
 
 detector_names <- c("row.row", "col.row", 
                     "ht_intensity", "ht_gradient")
 
-
-
 num_of_lines <- 2
-max_iter <- 1
-rho_step=0.3
-theta_step = 0.003
-w_size = 2*round(sqrt(n_col^2 + n_row^2))
-w <- round(sqrt(w_size*pi/(rho_step*theta_step*9)))
+max_iter <- 1000
+rho_step <- 0.7
+theta_step <- 0.007
+w <- 10
+
 results <- list()
+results_suppression <- list()
 
 true_lines <- rbind(
   convert_ab_to_rho_theta(2, 10),
   convert_ab_to_rho_theta(-1, 80)
 )
-
-
+true_lines
 
 for (d in seq_along(detectors)) {
   detector <- detectors[[d]]
   errors <- vector("list", max_iter)
+  errors_suppress <- vector("list", max_iter)
   
   for (i in seq_len(max_iter)) {
     noisy_matrix <- base_matrix |> add.noise(sigma = 0.2)
-    res <- make_accumulator(noisy_matrix, detector, rho_step=rho_step, theta_step=theta_step)
+    res <- make_accumulator(noisy_matrix, detector, rho_step = rho_step, theta_step = theta_step)
     
-    
-    
-    
-    pred_rhotheta <- find_k_max(res$accumulator, k = num_of_lines,
-                                qrho = res$rho, qtheta = pi/2 - res$theta,
-                                suppress = T, window = w )
-    
+    # Without suppression
+    pred_rhotheta <- find_k_max(
+      res$accumulator, k = num_of_lines,
+      qrho = res$rho, qtheta = pi/2 - res$theta,
+      suppress = FALSE, window = 0
+    )
     err <- compute_err(true_lines, pred_rhotheta)
     errors[[i]] <- err
+
+    # With suppression
+    pred_rhotheta_suppress <- find_k_max(
+      res$accumulator, k = num_of_lines,
+      qrho = res$rho, qtheta = pi/2 - res$theta,
+      suppress = TRUE, window = w
+    )
+    err_suppress <- compute_err(true_lines, pred_rhotheta_suppress)
+    errors_suppress[[i]] <- err_suppress
   }
   
   err_matrix <- do.call(rbind, errors)
   mean_vals <- colMeans(err_matrix)
+  
+  err_matrix_suppress <- do.call(rbind, errors_suppress)
+  mean_vals_suppress <- colMeans(err_matrix_suppress)
   
   results[[d]] <- tibble(
     detector = detector_names[d],
     rho_mean = mean_vals["dr"],
     theta_mean = mean_vals["dtheta"]
   )
+  
+  results_suppression[[d]] <- tibble(
+    detector = detector_names[d],
+    rho_mean = mean_vals_suppress["dr"],
+    theta_mean = mean_vals_suppress["dtheta"]
+  )
 }
 
 df <- bind_rows(results)
+df_suppr <- bind_rows(results_suppression)
+
 print(df)
-#Rprof(NULL)
-#summaryRprof("a.out")
+print(df_suppr)
+
+# Rprof(NULL)
+# summaryRprof("a.out")
+
 ```
