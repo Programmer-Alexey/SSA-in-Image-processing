@@ -19,12 +19,14 @@ cssa_detector <- function(matrix, num_of_lines = 2, method = "row.row") {
   }
   
   
-  cleaned_matrix <- ifelse(cleaned_matrix < 0, 0, ifelse(cleaned_matrix > 1, 1, cleaned_matrix))
-  threshold_value <- quantile(abs(cleaned_matrix), 0.8)
+  cleaned_matrix <- ifelse(cleaned_matrix < 0.01, 0, ifelse(cleaned_matrix > 0.99, 1, cleaned_matrix))
+  threshold_value <- quantile(abs(cleaned_matrix), 0.9)
   result_matrix <- ifelse(abs(cleaned_matrix) > threshold_value, cleaned_matrix, 0)
+  result_matrix <- ifelse(result_matrix < 0.01, 0, ifelse(result_matrix > 0.99, 1, result_matrix))
   
   return(result_matrix)
 }
+
 
 
 
