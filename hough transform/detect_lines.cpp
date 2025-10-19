@@ -54,8 +54,8 @@ NumericMatrix detect_lines(IntegerMatrix accumulator,
             double theta = quant_theta[col];
 
             if (std::fabs(std::sin(theta)) > eps) {
-                double a = -std::tan(theta);
-                double b = rho / std::cos(theta);
+                double a = -1/std::tan(theta);
+                double b = rho / std::sin(theta);
                 add_line_to_matrix(output, a, b);
             }
         }
@@ -82,8 +82,8 @@ NumericMatrix detect_lines(IntegerMatrix accumulator,
             double theta = quant_theta[max_col];
 
             if (std::fabs(std::sin(theta)) > eps) {
-                double a = -std::tan(theta);
-                double b = rho / std::cos(theta);
+                double a = -1/std::tan(theta);
+                double b = rho / std::sin(theta);
                 add_line_to_matrix(output, a, b);
             }
 
