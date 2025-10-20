@@ -1,0 +1,277 @@
+---
+output:
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(transport)
+source("hough transform/hough_transform.r")
+source("hough transform/convolution.r")
+source("ssa-based methods/cssa-transform.r")
+
+```
+
+## Генерация тестового изображения с шумом
+
+```{r}
+n_col <- 200
+n_row <- 240
+matrix <- matrix(0, ncol = n_col, nrow = n_row) |> 
+  add.line(a = 2, b = 0) |> 
+  add.line(a = -1, b = 120)
+
+noizy_matrix <- matrix |> add.noise(sigma = 0.2)
+
+plot.matrix(noizy_matrix)
+```
+
+## Детектор границ, основанных на алгоритмах CSSA.COL.COL/ COL.ROW/ ROW.COL/ ROW.ROW
+
+Ниже представлен код детектора на основе cssa. Преобразование Хафа оставляет аккумуляторный массив $(\rho, \theta)$, где $\rho \in -\sqrt{n^2 + m^2}:\sqrt{n^2 + m^2}$, $\theta \in 0:180$. Изменяются параметры соответственно с шагом rho_step и \theta_step.
+
+```{r}
+
+# library(irlba)
+Rprof("a.out")
+
+cssa_detector <- function(matrix, num_of_lines = 2, method = "row.row") {
+  if (method == "col.col") {
+    cleaned_matrix <- matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re()
+  } else if (method == "row.row") {
+    cleaned_matrix <- matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.row() |> Re()
+  } else if (method == "col.row") {
+    cleaned_matrix <- matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.row() |> Re()
+  } else if (method == "row.col") {
+    cleaned_matrix <- matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.col() |> Re()
+  }
+  
+  
+  cleaned_matrix <- ifelse(cleaned_matrix < 0, 0, ifelse(cleaned_matrix > 1, 1, cleaned_matrix))
+  threshold_value <- quantile(abs(cleaned_matrix), 0.9)
+  result_matrix <- ifelse(abs(cleaned_matrix) > threshold_value, cleaned_matrix, 0)
+  
+  return(result_matrix)
+}
+
+theta_step <- 1
+
+rho_step <- 1
+
+acum_result <- make_accumulator(noizy_matrix, detector = cssa_detector, theta_step = theta_step, rho_step = rho_step)
+
+accumulator <- acum_result$accumulator
+rho <- acum_result$rho
+theta <- acum_result$theta
+
+#detect_lines(accumulator, rho, theta, 2, n_col, n_row, T, 8) |> plot.matrix()
+plot.matrix(accumulator)
+
+Rprof(NULL)
+summaryRprof("a.out")
+```
+
+
+Как видим, на аккумуляторном массиве 2 локальных максимума, соответствующих параметрам наших прямых
+
+
+## Метрики сравнения
+Ниже представлены метрики для сравнения, параметры(макс. кол-во итераций, шаги дискретизации параметров $\rho$ и $\theta$), а также
+
+```{r}
+
+MSE <- function(matr1, matr2){
+  n <- ncol(matr1) * nrow(matr1)
+  delta <- matr1-matr2
+  sqrt(sum(delta*delta)) / n
+}
+
+MAE <- function(matr1, matr2){
+  n <- ncol(matr1) * nrow(matr1)
+  delta <- matr1-matr2
+  sum(abs(delta)) / n
+}
+
+wasserstein1d <- function(matr1, matr2, p = 1){
+  matr1 <- matr1 / sum(matr1)
+  matr2 <- matr2 / sum(matr2)
+  transport::wasserstein1d(matr1, matr2, p)
+}
+
+
+ssim_metric <- function(matr1, matr2, L = 1){
+  x <- as.vector(matr1)
+  y <- as.vector(matr2)
+  
+  mu_x <- mean(x)
+  mu_y <- mean(y)
+  
+  sigma_x2 <- var(x)
+  sigma_y2 <- var(y)
+  sigma_xy <- cov(x, y)
+  
+  C1 <- (0.01 * L)^2
+  C2 <- (0.03 * L)^2
+  
+  ssim <- ((2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)) /
+          ((mu_x^2 + mu_y^2 + C1) * (sigma_x2 + sigma_y2 + C2))
+  
+  return(ssim)
+}
+
+# Parameters for the following computations:
+max_iter <- 100
+theta_step <- 1
+rho_step <- 1
+num_of_lines <- 2
+
+mse_cssa_row_row <- mse_cssa_col_col <- mse_cssa_row_col <- mse_cssa_col_row <- 0
+mae_cssa_row_row <- mae_cssa_col_col <- mae_cssa_row_col <- mae_cssa_col_row <- 0
+wass_cssa_row_row <- wass_cssa_col_col <- wass_cssa_row_col <- wass_cssa_col_row <- 0
+ssim_cssa_row_row <- ssim_cssa_col_col <- ssim_cssa_row_col <- ssim_cssa_col_row <- 0
+
+mse_cssa_row_row_nms <- mse_cssa_col_col_nms <- mse_cssa_row_col_nms <- mse_cssa_col_row_nms <- 0
+mae_cssa_row_row_nms <- mae_cssa_col_col_nms <- mae_cssa_row_col_nms <- mae_cssa_col_row_nms <- 0
+wass_cssa_row_row_nms <- wass_cssa_col_col_nms <- wass_cssa_row_col_nms <- wass_cssa_col_row_nms <- 0
+ssim_cssa_row_row_nms <- ssim_cssa_col_col_nms <- ssim_cssa_row_col_nms <- ssim_cssa_col_row_nms <- 0
+
+mse_intensity <- mae_intensity <- wass_intensity <- ssim_intensity <- 0
+mse_gradient  <- mae_gradient  <- wass_gradient  <- ssim_gradient  <- 0
+
+mse_intensity_nms <- mae_intensity_nms <- wass_intensity_nms <- ssim_intensity_nms <- 0
+mse_gradient_nms  <- mae_gradient_nms  <- wass_gradient_nms  <- ssim_gradient_nms  <- 0
+
+
+```
+
+## Вычисление метрик
+
+Здесь мы считаем разницу между истинной матрицей с прямыми и результат работы преобразования Хафа с детекторами границ, основанными на следующих алгоритмах:
+- Пороговое фильтрование
+- Вычисление градиента и пороговая фильтрация
+- CSSA col.col/col.row/row.col/row.row алгоритмы(тоже с пороговой фильтрацией, сравнение алгоритмов без фильтрации есть в другом файле)
+
+```{r}
+max_iter <- 2
+
+for (iter in 1:max_iter) {
+  noizy_matrix <- matrix |> add.noise(sigma = 0.2)
+  
+  # row.row
+  accum <- make_accumulator(noizy_matrix, detector = function(m) cssa_detector(m, method = "row.row"), 
+                            theta_step = theta_step, rho_step = rho_step)
+  out <- detect_lines(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row)
+  out_nms <- detect_lines_nms(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row, suppression_window=4)
+  
+  mse_cssa_row_row <- mse_cssa_row_row + MSE(out, matrix)
+  mae_cssa_row_row <- mae_cssa_row_row + MAE(out, matrix)
+  wass_cssa_row_row <- wass_cssa_row_row + wasserstein1d(out, matrix)
+  ssim_cssa_row_row <- ssim_cssa_row_row + ssim_metric(out, matrix)
+  
+  mse_cssa_row_row_nms <- mse_cssa_row_row_nms + MSE(out_nms, matrix)
+  mae_cssa_row_row_nms <- mae_cssa_row_row_nms + MAE(out_nms, matrix)
+  wass_cssa_row_row_nms <- wass_cssa_row_row_nms + wasserstein1d(out_nms, matrix)
+  ssim_cssa_row_row_nms <- ssim_cssa_row_row_nms + ssim_metric(out_nms, matrix)
+  
+  # col.col
+  accum <- make_accumulator(noizy_matrix, detector = function(m) cssa_detector(m, method = "col.col"), 
+                            theta_step = theta_step, rho_step = rho_step)
+  out <- detect_lines(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row)
+  out_nms <- detect_lines_nms(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row, suppression_window=4)
+  
+  mse_cssa_col_col <- mse_cssa_col_col + MSE(out, matrix)
+  mae_cssa_col_col <- mae_cssa_col_col + MAE(out, matrix)
+  wass_cssa_col_col <- wass_cssa_col_col + wasserstein1d(out, matrix)
+  ssim_cssa_col_col <- ssim_cssa_col_col + ssim_metric(out, matrix)
+  
+  mse_cssa_col_col_nms <- mse_cssa_col_col_nms + MSE(out_nms, matrix)
+  mae_cssa_col_col_nms <- mae_cssa_col_col_nms + MAE(out_nms, matrix)
+  wass_cssa_col_col_nms <- wass_cssa_col_col_nms + wasserstein1d(out_nms, matrix)
+  ssim_cssa_col_col_nms <- ssim_cssa_col_col_nms + ssim_metric(out_nms, matrix)
+  
+  # row.col
+  accum <- make_accumulator(noizy_matrix, detector = function(m) cssa_detector(m, method = "row.col"), 
+                            theta_step = theta_step, rho_step = rho_step)
+  out <- detect_lines(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row)
+  out_nms <- detect_lines_nms(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row, suppression_window=4)
+  
+  mse_cssa_row_col <- mse_cssa_row_col + MSE(out, matrix)
+  mae_cssa_row_col <- mae_cssa_row_col + MAE(out, matrix)
+  wass_cssa_row_col <- wass_cssa_row_col + wasserstein1d(out, matrix)
+  ssim_cssa_row_col <- ssim_cssa_row_col + ssim_metric(out, matrix)
+  
+  mse_cssa_row_col_nms <- mse_cssa_row_col_nms + MSE(out_nms, matrix)
+  mae_cssa_row_col_nms <- mae_cssa_row_col_nms + MAE(out_nms, matrix)
+  wass_cssa_row_col_nms <- wass_cssa_row_col_nms + wasserstein1d(out_nms, matrix)
+  ssim_cssa_row_col_nms <- ssim_cssa_row_col_nms + ssim_metric(out_nms, matrix)
+  
+  # col.row
+  accum <- make_accumulator(noizy_matrix, detector = function(m) cssa_detector(m, method = "col.row"), 
+                            theta_step = theta_step, rho_step = rho_step)
+  out <- detect_lines(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row)
+  out_nms <- detect_lines_nms(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row, suppression_window=4)
+  
+  mse_cssa_col_row <- mse_cssa_col_row + MSE(out, matrix)
+  mae_cssa_col_row <- mae_cssa_col_row + MAE(out, matrix)
+  wass_cssa_col_row <- wass_cssa_col_row + wasserstein1d(out, matrix)
+  ssim_cssa_col_row <- ssim_cssa_col_row + ssim_metric(out, matrix)
+  
+  mse_cssa_col_row_nms <- mse_cssa_col_row_nms + MSE(out_nms, matrix)
+  mae_cssa_col_row_nms <- mae_cssa_col_row_nms + MAE(out_nms, matrix)
+  wass_cssa_col_row_nms <- wass_cssa_col_row_nms + wasserstein1d(out_nms, matrix)
+  ssim_cssa_col_row_nms <- ssim_cssa_col_row_nms + ssim_metric(out_nms, matrix)
+  
+  # Intensity thresholding
+  accum <- make_accumulator(noizy_matrix, detector = intensity_detector, theta_step = theta_step, rho_step = rho_step)
+  out_intensity <- detect_lines(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row)
+  out_intensity_nms <- detect_lines_nms(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row, suppression_window=4)
+  
+  mse_intensity <- mse_intensity + MSE(out_intensity, matrix)
+  mae_intensity <- mae_intensity + MAE(out_intensity, matrix)
+  wass_intensity <- wass_intensity + wasserstein1d(out_intensity, matrix)
+  ssim_intensity <- ssim_intensity + ssim_metric(out_intensity, matrix)
+  
+  mse_intensity_nms <- mse_intensity_nms + MSE(out_intensity_nms, matrix)
+  mae_intensity_nms <- mae_intensity_nms + MAE(out_intensity_nms, matrix)
+  wass_intensity_nms <- wass_intensity_nms + wasserstein1d(out_intensity_nms, matrix)
+  ssim_intensity_nms <- ssim_intensity_nms + ssim_metric(out_intensity_nms, matrix)
+  
+  # Gradient + thresholding
+  accum <- make_accumulator(noizy_matrix, detector = intensity_gradient_detector, theta_step = theta_step, rho_step = rho_step)
+  out_gradient <- detect_lines(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row)
+  out_gradient_nms <- detect_lines_nms(accum$accumulator, accum$rho, accum$theta, N=num_of_lines, ncol=n_col, nrow=n_row, suppression_window=4)
+  
+  mse_gradient <- mse_gradient + MSE(out_gradient, matrix)
+  mae_gradient <- mae_gradient + MAE(out_gradient, matrix)
+  wass_gradient <- wass_gradient + wasserstein1d(out_gradient, matrix)
+  ssim_gradient <- ssim_gradient + ssim_metric(out_gradient, matrix)
+  
+  mse_gradient_nms <- mse_gradient_nms + MSE(out_gradient_nms, matrix)
+  mae_gradient_nms <- mae_gradient_nms + MAE(out_gradient_nms, matrix)
+  wass_gradient_nms <- wass_gradient_nms + wasserstein1d(out_gradient_nms, matrix)
+  ssim_gradient_nms <- ssim_gradient_nms + ssim_metric(out_gradient_nms, matrix)
+  
+}
+
+
+tibble(
+  Method = c("CSSA_row_row", "CSSA_col_col", "CSSA_row_col", "CSSA_col_row", "Intensity", "Gradient"),
+  MSE = c(mse_cssa_row_row, mse_cssa_col_col, mse_cssa_row_col, mse_cssa_col_row, mse_intensity, mse_gradient) / max_iter,
+  MAE = c(mae_cssa_row_row, mae_cssa_col_col, mae_cssa_row_col, mae_cssa_col_row, mae_intensity, mae_gradient) / max_iter,
+  Wasserstein = c(wass_cssa_row_row, wass_cssa_col_col, wass_cssa_row_col, wass_cssa_col_row, wass_intensity, wass_gradient) / max_iter,
+  SSIM = c(ssim_cssa_row_row, ssim_cssa_col_col, ssim_cssa_row_col, ssim_cssa_col_row, ssim_intensity, ssim_gradient) / max_iter
+)
+
+tibble(
+  Method = c("CSSA_row_row", "CSSA_col_col", "CSSA_row_col", "CSSA_col_row", "Intensity", "Gradient"),
+  MSE = c(mse_cssa_row_row_nms, mse_cssa_col_col_nms, mse_cssa_row_col_nms, mse_cssa_col_row_nms, mse_intensity_nms, mse_gradient_nms) / max_iter,
+  MAE = c(mae_cssa_row_row_nms, mae_cssa_col_col_nms, mae_cssa_row_col_nms, mae_cssa_col_row_nms, mae_intensity_nms, mae_gradient_nms) / max_iter,
+  Wasserstein = c(wass_cssa_row_row_nms, wass_cssa_col_col_nms, wass_cssa_row_col_nms, wass_cssa_col_row_nms, wass_intensity_nms, wass_gradient_nms) / max_iter,
+  SSIM = c(ssim_cssa_row_row_nms, ssim_cssa_col_col_nms, ssim_cssa_row_col_nms, ssim_cssa_col_row_nms, ssim_intensity_nms, ssim_gradient_nms) / max_iter
+)
+
+
+plot.matrix(noizy_matrix)
+plot.matrix(out_nms)
+
+```
