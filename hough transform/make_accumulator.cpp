@@ -24,7 +24,7 @@ List make_accumulator(NumericMatrix matrix,
     }
 
     // theta
-    int n_theta = std::floor(180.0 / theta_step);
+    int n_theta = std::floor(M_PI / theta_step);
     NumericVector theta(n_theta);
     for (int j = 0; j < n_theta; j++) {
         theta[j] = (j * M_PI) / (n_theta - 1);

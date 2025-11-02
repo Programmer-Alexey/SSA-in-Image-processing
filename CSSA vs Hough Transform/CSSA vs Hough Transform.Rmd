@@ -1,8 +1,9 @@
 ```{r}
 library(Rcpp)
-source("hough transform/hough_transform.r")
-source("hough transform/convolution.r")
-source("ssa-based methods/cssa-transform.r")
+source("../hough transform/hough_transform.r")
+
+source("../hough transform/convolution.r")
+source("../ssa-based methods/cssa-transform.r")
 
 
 library(transport)
@@ -84,13 +85,15 @@ errs <- replicate(max_iter, {
     theta_step = theta_step,
     rho_step = rho_step
   )
-  ht <- detect_lines_nms(
+  ht <- detect_lines(
     ht_accum$accumulator,
     ht_accum$rho,
     ht_accum$theta,
     num_of_lines,
     ncol = n_col,
-    nrow = n_row
+    nrow = n_row,
+    nms = T,
+    suppression_window = 6
   )
   
   # gradient detector
@@ -100,13 +103,15 @@ errs <- replicate(max_iter, {
     theta_step = theta_step,
     rho_step = rho_step
   )
-  grad <- detect_lines_nms(
+  grad <- detect_lines(
     grad_accum$accumulator,
     grad_accum$rho,
     grad_accum$theta,
     num_of_lines,
     ncol = n_col,
-    nrow = n_row
+    nrow = n_row,
+    nms = T,
+    suppression_window = 6
   )
   
   # cssa-based detectors
@@ -144,5 +149,22 @@ error_df
 
 
 UPD: В усреднении преобразования Хафа имеет более низкие показатели метрики Вассерштейна, однако MSE ниже у COL.ROW и ROW.ROW алгоритмах. Это может быть связано с тем, что ошибка в результате работы преобразования Хафа -- это ошибка параметров отрисовываемой прямой $y = \hat{a}x + \hat{b}$, а после cssa-преобразования могут оставаться небольшие по модулю остатки на всей матрице. Поэтому MSE оказывается меньше, а расстояние Вассерштейна(которое зависит в том числе и от расстояния между ненулевыми пикселями) --- больше.
+
+### Hypothesis testing
+
+```{r}
+library(tidyverse)
+test_df <- bind_rows(errs, .id = "iter")
+
+mae_data <- test_df |> select(iter, Method, MAE) |> filter(Method %in% c("HT", "COL.ROW")) |> pivot_wider(names_from = Method, values_from = MAE)
+
+t_test_result <- t.test(mae_data$COL.ROW, mae_data$HT,
+                        paired = TRUE,
+                        alternative = "greater")
+
+t_test_result
+
+
+```
 
 

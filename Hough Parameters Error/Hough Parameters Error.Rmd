@@ -2,8 +2,8 @@
 
 ```{r}
 library(Rcpp)
-source("hough transform/hough_transform.r")
-source("hough transform/convolution.r")
+source("../hough transform/hough_transform.r")
+source("../hough transform/convolution.r")
 
 
 library(transport)
@@ -114,7 +114,10 @@ compute_err(params1, params2)
 
 Итоговое вычисление
 ```{r}
-# Rprof("a.out")
+
+library(dplyr)
+library(tibble)
+
 base_matrix <- matrix(0, ncol = n_col, nrow = n_row) |> 
   add.line(a = 2, b = 10) |> 
   add.line(a = -1, b = 80)
@@ -126,78 +129,118 @@ detectors <- list(
   intensity_gradient_detector
 )
 
-detector_names <- c("row.row", "col.row", 
-                    "ht_intensity", "ht_gradient")
+detector_names <- c("row.row", "col.row", "ht_intensity", "ht_gradient")
 
 num_of_lines <- 2
-max_iter <- 1000
+max_iter <- 100
+
 rho_step <- 0.7
 theta_step <- 0.007
 w <- 10
-
-results <- list()
-results_suppression <- list()
 
 true_lines <- rbind(
   convert_ab_to_rho_theta(2, 10),
   convert_ab_to_rho_theta(-1, 80)
 )
-true_lines
 
-for (d in seq_along(detectors)) {
-  detector <- detectors[[d]]
-  errors <- vector("list", max_iter)
-  errors_suppress <- vector("list", max_iter)
+
+results_all <- lapply(seq_along(detectors), function(d) {
+  det <- detectors[[d]]
+  name <- detector_names[d]
   
-  for (i in seq_len(max_iter)) {
-    noisy_matrix <- base_matrix |> add.noise(sigma = 0.2)
-    res <- make_accumulator(noisy_matrix, detector, rho_step = rho_step, theta_step = theta_step)
+  replicate(max_iter, {
+    noisy_matrix <- base_matrix |> add.noise(sigma = 0.5)
+    res <- make_accumulator(noisy_matrix, det, rho_step = rho_step, theta_step = theta_step)
     
-    # Without suppression
-    pred_rhotheta <- find_k_max(
+    # without suppression
+    pred <- find_k_max(
       res$accumulator, k = num_of_lines,
       qrho = res$rho, qtheta = pi/2 - res$theta,
       suppress = FALSE, window = 0
     )
-    err <- compute_err(true_lines, pred_rhotheta)
-    errors[[i]] <- err
-
-    # With suppression
-    pred_rhotheta_suppress <- find_k_max(
+    err <- compute_err(true_lines, pred)
+    
+    # with suppression
+    pred_suppress <- find_k_max(
       res$accumulator, k = num_of_lines,
       qrho = res$rho, qtheta = pi/2 - res$theta,
       suppress = TRUE, window = w
     )
-    err_suppress <- compute_err(true_lines, pred_rhotheta_suppress)
-    errors_suppress[[i]] <- err_suppress
-  }
-  
-  err_matrix <- do.call(rbind, errors)
-  mean_vals <- colMeans(err_matrix)
-  
-  err_matrix_suppress <- do.call(rbind, errors_suppress)
-  mean_vals_suppress <- colMeans(err_matrix_suppress)
-  
-  results[[d]] <- tibble(
-    detector = detector_names[d],
-    rho_mean = mean_vals["dr"],
-    theta_mean = mean_vals["dtheta"]
-  )
-  
-  results_suppression[[d]] <- tibble(
-    detector = detector_names[d],
-    rho_mean = mean_vals_suppress["dr"],
-    theta_mean = mean_vals_suppress["dtheta"]
-  )
-}
+    err_suppress <- compute_err(true_lines, pred_suppress)
+    
+    list(
+      x = tibble(detector = name, dr = err["dr"], dtheta = err["dtheta"]),
+      x_suppress = tibble(detector = name, dr = err_suppress["dr"], dtheta = err_suppress["dtheta"])
+    )
+  }, simplify = FALSE)
+})
 
-df <- bind_rows(results)
-df_suppr <- bind_rows(results_suppression)
+x <- bind_rows(lapply(results_all, function(x) bind_rows(lapply(x, `[[`, "x"), .id = "iter")))
+x_suppress <- bind_rows(lapply(results_all, function(lst) bind_rows(lapply(lst, `[[`, "x_suppress"), .id = "iter")))
 
-print(df)
-print(df_suppr)
 
-# Rprof(NULL)
-# summaryRprof("a.out")
+x |> group_by(detector) |> summarise(dr=mean(dr), dtheta=mean(dtheta))
+x_suppress |> group_by(detector) |> summarise(dr=mean(dr), dtheta=mean(dtheta))
 
 ```
+
+### Hypothesis
+
+$H_0:\mu_{col-row} = \mu_{ht-threshold} $
+$H_1:\mu_{col-row} > \mu_{ht-threshold} $
+
+#### No suppression
+```{r}
+
+dr_data <- x |> filter(detector %in% c("col.row", "ht_intensity")) |> select(iter, detector, dr) |> pivot_wider(names_from = detector, values_from = dr)
+
+dr_data <- dr_data |> mutate(col.row = as.numeric(col.row), ht_intensity = as.numeric(ht_intensity))
+
+t_dr <- t.test(dr_data$col.row,dr_data$ht_intensity,paired = TRUE, alternative = "greater"
+)
+
+t_dr
+
+
+```
+
+
+```{r}
+dtheta_data <- x |> filter(detector %in% c("col.row", "ht_intensity")) |> select(iter, detector, dtheta) |> pivot_wider(names_from = detector, values_from = dtheta)
+dtheta_data <- dtheta_data |> mutate(col.row = as.numeric(col.row), ht_intensity = as.numeric(ht_intensity))
+
+t_dtheta <- t.test( dtheta_data$col.row, dtheta_data$ht_intensity, paired = TRUE, alternative = "greater")
+
+t_dtheta
+```
+
+
+#### Suppression
+
+```{r}
+
+dr_data <- x_suppress |> filter(detector %in% c("col.row", "ht_intensity")) |> select(iter, detector, dr) |> pivot_wider(names_from = detector, values_from = dr)
+
+#dr_data <- dr_data |> mutate(col.row = as.numeric(col.row), ht_intensity = as.numeric(ht_intensity))
+
+t_dr <- t.test( dr_data$col.row, dr_data$ht_intensity, paired = TRUE, alternative = "greater"
+)
+
+t_dr
+
+
+```
+
+
+```{r}
+dtheta_data <- x_suppress |> filter(detector %in% c("col.row", "ht_intensity")) |> select(iter, detector, dtheta) |> pivot_wider(names_from = detector, values_from = dtheta)
+dtheta_data <- dtheta_data |> mutate(col.row = as.numeric(col.row), ht_intensity = as.numeric(ht_intensity))
+
+t_dtheta <- t.test( dtheta_data$col.row, dtheta_data$ht_intensity, paired = TRUE,
+  alternative = "greater"
+)
+
+t_dtheta
+```
+
+

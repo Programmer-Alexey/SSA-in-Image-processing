@@ -6,9 +6,9 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(transport)
-source("hough transform/hough_transform.r")
-source("hough transform/convolution.r")
-source("ssa-based methods/cssa-transform.r")
+source("../hough transform/hough_transform.r")
+source("../hough transform/convolution.r")
+source("../ssa-based methods/cssa-transform.r")
 
 ```
 

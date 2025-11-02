@@ -1,6 +1,6 @@
 library("Rcpp")
-source("ssa-based methods/cssa-transform.r")
-sourceCpp("hough transform/convolution.cpp")
+source("../ssa-based methods/cssa-transform.r")
+sourceCpp("../hough transform/convolution.cpp")
 
 intensity_detector_parameter <- 0.8
 gradient_detector_parameter <- 2

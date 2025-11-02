@@ -1,6 +1,6 @@
-source("hough transform/convolution.r")
+source("../hough transform/convolution.r")
 library("Rcpp")
-sourceCpp("hough transform/make_accumulator.cpp")
+sourceCpp("../hough transform/make_accumulator.cpp")
 
 
 make_accumulator0 <- function(matrix, detector, theta_step = 1, rho_step = 1) {
@@ -30,7 +30,7 @@ make_accumulator0 <- function(matrix, detector, theta_step = 1, rho_step = 1) {
 }
 
 
-sourceCpp("hough transform/detect_lines.cpp")
+sourceCpp("../hough transform/detect_lines.cpp")
 detect_lines0 <- function(accumulator, quant_rho, quant_theta, N, ncol=100, nrow=100){
   
   eps <- 1/max(ncol, nrow)
