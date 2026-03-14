@@ -1,6 +1,22 @@
-source("../hough transform/convolution.r")
+.find_project_root <- function(start_dir) {
+  cur <- normalizePath(start_dir, winslash = "/", mustWork = FALSE)
+  for (i in 1:20) {
+    if (file.exists(file.path(cur, "SSA-in-Image-processing.Rproj"))) return(cur)
+    next_dir <- dirname(cur)
+    if (identical(next_dir, cur)) break
+    cur <- next_dir
+  }
+  normalizePath(start_dir, winslash = "/", mustWork = FALSE)
+}
+
+.this_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+.start_dir <- if (!is.null(.this_file)) dirname(normalizePath(.this_file)) else getwd()
+.project_root <- .find_project_root(.start_dir)
+.hough_dir <- file.path(.project_root, "hough transform")
+
+source(file.path(.hough_dir, "convolution.r"))
 library("Rcpp")
-sourceCpp("../hough transform/make_accumulator.cpp")
+sourceCpp(file.path(.hough_dir, "make_accumulator.cpp"))
 
 
 make_accumulator0 <- function(matrix, detector, theta_step = 1, rho_step = 1) {
@@ -30,7 +46,7 @@ make_accumulator0 <- function(matrix, detector, theta_step = 1, rho_step = 1) {
 }
 
 
-sourceCpp("../hough transform/detect_lines.cpp")
+sourceCpp(file.path(.hough_dir, "detect_lines.cpp"))
 detect_lines0 <- function(accumulator, quant_rho, quant_theta, N, ncol=100, nrow=100){
   
   eps <- 1/max(ncol, nrow)

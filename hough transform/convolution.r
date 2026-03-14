@@ -1,6 +1,23 @@
 library("Rcpp")
-source("../ssa-based methods/cssa-transform.r")
-sourceCpp("../hough transform/convolution.cpp")
+
+.find_project_root <- function(start_dir) {
+  cur <- normalizePath(start_dir, winslash = "/", mustWork = FALSE)
+  for (i in 1:20) {
+    if (file.exists(file.path(cur, "SSA-in-Image-processing.Rproj"))) return(cur)
+    next_dir <- dirname(cur)
+    if (identical(next_dir, cur)) break
+    cur <- next_dir
+  }
+  normalizePath(start_dir, winslash = "/", mustWork = FALSE)
+}
+
+.this_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+.start_dir <- if (!is.null(.this_file)) dirname(normalizePath(.this_file)) else getwd()
+.project_root <- .find_project_root(.start_dir)
+.hough_dir <- file.path(.project_root, "hough transform")
+
+source(file.path(.project_root, "ssa-based methods", "cssa-transform.r"))
+sourceCpp(file.path(.hough_dir, "convolution.cpp"))
 
 intensity_detector_parameter <- 0.8
 gradient_detector_parameter <- 2

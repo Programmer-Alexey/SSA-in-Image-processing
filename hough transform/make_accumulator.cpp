@@ -1,11 +1,14 @@
 #include <Rcpp.h>
+#include <vector>
+#include <cmath>
 using namespace Rcpp;
 
 // [[Rcpp::export]]
 List make_accumulator(NumericMatrix matrix,
     Function detector,
-    double theta_step = 1.0,
-    double rho_step = 1.0) {
+    double rho_step = 1,
+    double theta_step = 0.01
+    ) {
 
     NumericMatrix bound_matrix = detector(matrix);
 
@@ -24,10 +27,12 @@ List make_accumulator(NumericMatrix matrix,
     }
 
     // theta
-    int n_theta = std::floor(M_PI / theta_step);
+    // theta_step is in radians, theta spans [0, pi].
+    const double pi = std::acos(-1.0);
+    int n_theta = (int)std::floor(pi / theta_step) + 1;
     NumericVector theta(n_theta);
     for (int j = 0; j < n_theta; j++) {
-        theta[j] = (j * M_PI) / (n_theta - 1);
+        theta[j] = j * theta_step;
     }
 
     // rho
@@ -42,11 +47,12 @@ List make_accumulator(NumericMatrix matrix,
     IntegerMatrix accumulator(n_rho, n_theta);
 
     for (size_t i = 0; i < non_zero_row.size(); ++i) {
-        int xi = non_zero_row[i];
-        int yi = non_zero_col[i];
+        // Geometry uses x = column index, y = row index (both 1-based)
+        int x = non_zero_col[i];
+        int y = non_zero_row[i];
 
         for (int j = 0; j < n_theta; ++j) {
-            double rho_val = xi * std::cos(theta[j]) + yi * std::sin(theta[j]);
+            double rho_val = x * std::cos(theta[j]) + y * std::sin(theta[j]);
             int cur_rho = std::round((rho_val - rho[0]) / rho_step);
 
             if (cur_rho >= 0 && cur_rho < n_rho) {

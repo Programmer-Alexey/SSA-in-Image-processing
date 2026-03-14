@@ -8,7 +8,7 @@ new.matrix <- function(N_t = 100, N_c = 100){
 }
 
 # Adding lines in matrix
-add.line <- function(m, a = 1, b = 0, method = "bresenham") {
+add.line <- function(m, a = 1, b = 0, method = "bresenham", intensity = 1) {
   # method <- match.arg(method)
   N_c <- nrow(m)
   N_t <- ncol(m)
@@ -17,13 +17,13 @@ add.line <- function(m, a = 1, b = 0, method = "bresenham") {
     for (k in 1:N_t) {
       y <- a * k + b
       if (y >= 1 && y <= N_c) {
-        m[round(y), k] <- 1
+        m[round(y), k] <- intensity
       }
     }
     
   } else if (method == "bresenham") {
-    # Алгоритм Брезенхема
-    # Преобразуем уравнение y = a*x + b в координаты начала и конца
+    # РђР»РіРѕСЂРёС‚Рј Р‘СЂРµР·РµРЅС…РµРјР°
+    # РџСЂРµРѕР±СЂР°Р·СѓРµРј СѓСЂР°РІРЅРµРЅРёРµ y = a*x + b РІ РєРѕРѕСЂРґРёРЅР°С‚С‹ РЅР°С‡Р°Р»Р° Рё РєРѕРЅС†Р°
     x0 <- 1
     y0 <- round(a * x0 + b)
     x1 <- N_t
@@ -37,7 +37,7 @@ add.line <- function(m, a = 1, b = 0, method = "bresenham") {
     
     repeat {
       if (x0 >= 1 && x0 <= N_t && y0 >= 1 && y0 <= N_c) {
-        m[y0, x0] <- 1
+        m[y0, x0] <- intensity
       }
       if (x0 == x1 && y0 == y1) break
       e2 <- 2 * err
@@ -154,12 +154,18 @@ length.fun <- function(V) {
 # If from.0.to.1 = TRUE, all values less than 0, replaced by 0,
 # all values greater than 1, are replaced by 1
 
-plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){   
+plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){
   rgb.palette <- colorRampPalette(c("white", "black"), space = "rgb")
+
+  as_plot_matrix <- function(x) {
+    x <- as.matrix(x)
+    if (is.complex(x)) x <- Re(x)
+    x
+  }
   
-  # одиночная матрица
+  # РѕРґРёРЅРѕС‡РЅР°СЏ РјР°С‚СЂРёС†Р°
   if (!is.list(m)) {
-    m <- t(m)
+    m <- t(as_plot_matrix(m))
     if (!from.0.to.1){
       return(levelplot(m, xlab="", ylab="", 
                        col.regions=rgb.palette,
@@ -167,6 +173,7 @@ plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){
                        colorkey=FALSE,
                        col="transparent", border=NA, cuts=255))
     } else {
+      m[m < 0] <- 0
       m[m > 1] <- 1
       return(levelplot(m, xlab="", ylab="", 
                        col.regions=rgb.palette,
@@ -176,11 +183,14 @@ plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){
     }
   }
   
-  # список матриц
+  # СЃРїРёСЃРѕРє РјР°С‚СЂРёС†
   plots <- list()
   for (i in seq_along(m)) {
-    mat <- t(m[[i]])
-    if (from.0.to.1) mat[mat > 1] <- 1
+    mat <- t(as_plot_matrix(m[[i]]))
+    if (from.0.to.1) {
+      mat[mat < 0] <- 0
+      mat[mat > 1] <- 1
+    }
     
     p <- levelplot(mat, xlab="", ylab="", 
                    col.regions=rgb.palette,
@@ -192,7 +202,7 @@ plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){
     plots[[i]] <- p
   }
   
-  # сетка
+  # СЃРµС‚РєР°
   do.call(grid.arrange, c(plots, ncol = nplots %||% length(plots)))
 }
 

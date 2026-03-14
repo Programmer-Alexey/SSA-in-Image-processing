@@ -75,7 +75,8 @@ NumericMatrix intensity_gradient_detector(NumericMatrix matr, double threshold =
 NumericMatrix gaussian_kernel(int n, double sigma) {
     NumericMatrix kernel(n, n);
     int center = n / 2;
-    double factor = 1.0 / (2 * M_PI * sigma * sigma);
+    const double pi = std::acos(-1.0);
+    double factor = 1.0 / (2 * pi * sigma * sigma);
     for (int i = 0; i < n; i++)
         for (int j = 0; j < n; j++) {
             double x = i - center;
@@ -88,7 +89,7 @@ NumericMatrix gaussian_kernel(int n, double sigma) {
 // --------------------
 // Laplace Detector
 // [[Rcpp::export]]
-NumericMatrix laplace_detector(NumericMatrix matr, double sigma = 2.0) {
+NumericMatrix laplace_detector(NumericMatrix matr, double sigma = 2.0, double amp_threshold = 0.25) {
     int n = (int)(6 * sigma) - 1;
     NumericMatrix gauss = gaussian_kernel(n, sigma);
 
@@ -100,6 +101,15 @@ NumericMatrix laplace_detector(NumericMatrix matr, double sigma = 2.0) {
     NumericMatrix temp = convolution(matr, gauss);
     NumericMatrix res = convolution(temp, laplace);
 
+    double max_abs = 0.0;
+    for (int i = 0; i < res.nrow(); i++) {
+        for (int j = 0; j < res.ncol(); j++) {
+            double v = std::abs(res(i, j));
+            if (v > max_abs) max_abs = v;
+        }
+    }
+    double amp_thr = (amp_threshold > 0.0) ? amp_threshold * max_abs : 0.0;
+
     int nrow = res.nrow(), ncol = res.ncol();
     NumericMatrix edges(nrow, ncol);
     for (int i = 1; i < nrow - 1; i++)
@@ -110,7 +120,17 @@ NumericMatrix laplace_detector(NumericMatrix matr, double sigma = 2.0) {
                     if (res(ii, jj) < 0) neg++;
                     else if (res(ii, jj) > 0) pos++;
                 }
-            edges(i, j) = (neg > 0 && pos > 0) ? 1 : 0;
+            if (neg > 0 && pos > 0) {
+                double local_max = 0.0;
+                for (int ii = i - 1; ii <= i + 1; ii++)
+                    for (int jj = j - 1; jj <= j + 1; jj++) {
+                        double v = std::abs(res(ii, jj));
+                        if (v > local_max) local_max = v;
+                    }
+                edges(i, j) = (local_max >= amp_thr) ? 1 : 0;
+            } else {
+                edges(i, j) = 0;
+            }
         }
     return edges;
 }

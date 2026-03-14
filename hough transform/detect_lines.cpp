@@ -1,5 +1,7 @@
 #include <Rcpp.h>
 #include <algorithm>
+#include <numeric>
+#include <cmath>
 using namespace Rcpp;
 
 
@@ -7,11 +9,31 @@ void add_line_to_matrix(NumericMatrix& mat, double a, double b) {
     int nrow = mat.nrow();
     int ncol = mat.ncol();
 
-    for (int x = 0; x < ncol; ++x) {
-        double y = a * x + b;
-        int yi = (int)std::round(y);
-        if (yi >= 0 && yi < nrow) {
-            mat(yi, x) = 1.0;
+    // Bresenham rasterization to match add.line() behavior in R.
+    int x0 = 1;
+    int x1 = ncol;
+    int y0 = (int)std::round(a * x0 + b);
+    int y1 = (int)std::round(a * x1 + b);
+
+    int dx = std::abs(x1 - x0);
+    int dy = std::abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    while (true) {
+        if (x0 >= 1 && x0 <= ncol && y0 >= 1 && y0 <= nrow) {
+            mat(y0 - 1, x0 - 1) = 1.0;
+        }
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) {
+            err -= dy;
+            x0 += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y0 += sy;
         }
     }
 }

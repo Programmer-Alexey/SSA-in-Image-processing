@@ -1,0 +1,885 @@
+---
+title: "CSSA single-line stress cases"
+author: "Alex"
+date: "2026-03-06"
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+set.seed(1111)
+#options(timeout = 600)
+```
+
+```{r, echo=F}
+project_lib <- normalizePath(".r-local-lib", winslash = "/", mustWork = FALSE)
+if (dir.exists(project_lib)) {
+  .libPaths(c(project_lib, .libPaths()))
+}
+
+required_pkgs <- c("rlang", "forecast", "Rssa", "gridExtra", "Rcpp", "dplyr")
+missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+
+source("ssa-based methods/cssa-transform.r")
+```
+
+## Конфигурации
+
+```{r}
+sigma_noise <- 0.2
+n_repeats <- 400
+num_of_lines <- 1L
+
+configs <- data.frame(
+  config_id = c(
+    "diag_pos_full",
+    "diag_neg_full",
+    "shallow_bottom",
+    "shallow_center",
+    "steep_full",
+    "steep_shifted",
+    "short_corner",
+    "horizontal",
+    "almost_horizontal"
+  ),
+  n_col = rep(100L, 9),
+  n_row = rep(100L, 9),
+  a = c(1, -1, 0.5, 0.5, 2, 2, 1, 0, 0.05),
+  b = c(0, 101, 0, 25, -1, -40, 70, 20, 30),
+  description = c(
+    "Positive full diagonal",
+    "Negative full diagonal",
+    "Shallow line from lower border",
+    "Shallow central line",
+    "Steep line crossing most of the image",
+    "Steep shifted line with shorter visible segment",
+    "Short corner segment",
+    "Horizontal",
+    "Almost Horizontal"
+  ),
+  stringsAsFactors = FALSE
+)
+
+configs
+```
+
+
+Вот так выглядят прямые с такими параметрами
+```{r}
+config_matrices <- lapply(seq_len(nrow(configs)), function(i) {
+  matrix(0, nrow = configs$n_row[i], ncol = configs$n_col[i]) |>
+    add.line(a = configs$a[i], b = configs$b[i])
+})
+
+config_labels <- sprintf("(a = %s, b = %s)", configs$a, configs$b)
+
+plot.matrix(
+  config_matrices,
+  from.0.to.1 = TRUE,
+  labels = config_labels,
+  nplots = 3
+)
+```
+
+
+## Вспомогательные функции
+
+```{r}
+clip01 <- function(m) {
+  m <- as.matrix(m)
+  m[m < 0.001] <- 0
+  m[m > 0.999] <- 1
+  m
+}
+
+mse <- function(truth, pred) {
+  mean((truth - pred)^2)
+}
+
+cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
+  cleaned <- switch(
+    method,
+    "col.col" = m |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re(),
+    "col.row" = m |> dft() |> cssa.col(num.line = num_of_lines) |> idft.row() |> Re(),
+    "row.col" = m |> dft() |> cssa.row(num.line = num_of_lines) |> idft.col() |> Re(),
+    "row.row" = m |> dft() |> cssa.row(num.line = num_of_lines) |> idft.row() |> Re(),
+    stop("Unknown method: ", method)
+  )
+  clip01(cleaned)
+}
+
+line_coverage_stats <- function(m) {
+  idx <- which(m > 0, arr.ind = TRUE)
+  if (nrow(idx) == 0) {
+    return(c(
+      visible_pixels = 0,
+      row_coverage = 0,
+      col_coverage = 0
+    ))
+  }
+
+  c(
+    visible_pixels = nrow(idx),
+    row_coverage = length(unique(idx[, 1])) / nrow(m),
+    col_coverage = length(unique(idx[, 2])) / ncol(m)
+  )
+}
+
+make_line_image <- function(n_row, n_col, a, b) {
+  matrix(0, nrow = n_row, ncol = n_col) |>
+    add.line(a = a, b = b)
+}
+```
+
+## Эксперимент с MSE
+
+```{r}
+methods_cssa <- c("row.row", "col.row", "row.col", "col.col")
+
+results_list <- vector("list", length = nrow(configs) * n_repeats * length(methods_cssa))
+idx_out <- 1L
+
+for (cfg_i in seq_len(nrow(configs))) {
+  cfg <- configs[cfg_i, ]
+  base_matrix <- make_line_image(
+    n_row = cfg$n_row,
+    n_col = cfg$n_col,
+    a = cfg$a,
+    b = cfg$b
+  )
+  coverage <- line_coverage_stats(base_matrix)
+
+  for (rep_i in seq_len(n_repeats)) {
+    noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
+
+    for (method_name in methods_cssa) {
+      denoised <- cssa_denoise(
+        noisy_matrix,
+        num_of_lines = num_of_lines,
+        method = method_name
+      )
+
+      results_list[[idx_out]] <- data.frame(
+        config_id = cfg$config_id,
+        description = cfg$description,
+        n_col = cfg$n_col,
+        n_row = cfg$n_row,
+        a = cfg$a,
+        b = cfg$b,
+        visible_pixels = unname(coverage["visible_pixels"]),
+        row_coverage = unname(coverage["row_coverage"]),
+        col_coverage = unname(coverage["col_coverage"]),
+        sigma = sigma_noise,
+        rep = rep_i,
+        method = method_name,
+        mse = mse(base_matrix, denoised),
+        stringsAsFactors = FALSE
+      )
+      idx_out <- idx_out + 1L
+    }
+  }
+}
+
+error_samples <- do.call(rbind, results_list)
+head(error_samples, 12)
+```
+
+```{r}
+write.csv(error_samples, "error_samples.csv", row.names = FALSE)
+```
+
+## Сводка по MSE
+
+```{r}
+dplyr::glimpse(error_samples)
+
+summary_mse <- error_samples |>
+  dplyr::group_by(
+    config_id, description, n_col, n_row, a, b,
+    visible_pixels, row_coverage, col_coverage,
+    method
+  ) |>
+  dplyr::summarise(
+    mean_mse = mean(mse),
+    median_mse = median(mse),
+    sd_mse = sd(mse),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(config_id, mean_mse)
+
+summary_mse
+```
+
+## Лучший CSSA-вариант на каждой конфигурации
+
+```{r}
+best_by_config <- summary_mse |>
+  dplyr::group_by(config_id) |>
+  dplyr::slice_min(order_by = mean_mse, n = 1, with_ties = FALSE) |>
+  dplyr::ungroup() |>
+  dplyr::select(
+    config_id, description, n_col, n_row, a, b,
+    visible_pixels, row_coverage, col_coverage,
+    method, mean_mse, median_mse, sd_mse
+  )
+
+best_by_config
+```
+
+## Матрица средних MSE
+
+```{r}
+m_table <- xtabs(mean_mse ~ config_id + method, data = summary_mse)
+m_table
+```
+
+```{r}
+m_table_norm <- sweep(m_table, 1, apply(m_table, 1, min), "/")
+m_table_norm
+```
+
+
+
+`row.row` обходит другие алгоритмы в большинстве прямых. Точно по MSE он лучше, чем `.col` алгоритмы, так как они рассеивают сигнал на много кусков с одинаковым оглом наклона(вероятно, это происходит из-за idft по столбцу). Конечно, `col.row` тоже рассеивает сигнал(об этом в преобразовании Хафа), но частично это удается исправить с помощью увеличения `num_of_lines`(кол-ва компонент в SVD, которые мы считаем сигналом). 
+
+
+Вот пример того, как работает алгоритм col.col: прямые вида $y=x/m$ после обработки превращаются в m кусков. 
+
+```{r}
+# Строим матрицы с прямыми вида y=x/m
+
+demo_matrices = lapply(c(2, 5, 8, 10), function(m) {matrix(0, ncol=100, nrow=100) |> add.line(a=1/m)})
+
+
+
+demo_results <- list(
+  "m=2(no denoiser)" = demo_matrices[[1]],
+  "m=2" = cssa_denoise(demo_matrices[[1]], num_of_lines = 2, method = "col.col"),
+  "m=5" = cssa_denoise(demo_matrices[[2]], num_of_lines = 2, method = "col.col"),
+  "m=8" = cssa_denoise(demo_matrices[[3]], num_of_lines = 2, method = "col.col"),
+  "m=10" = cssa_denoise(demo_matrices[[4]], num_of_lines = 2, method = "col.col")
+)
+
+plot.matrix(
+  demo_results,
+  from.0.to.1 = TRUE,
+  labels = names(demo_results),
+  nplots = 3
+)
+```
+
+
+*Замечание*: для некоторых алгоритмов помогает увеличить параметр `num.line`. Например, для `col.row` мы можем уменьшить mse таким образом.
+```{r}
+numline_base_matrix <- matrix(0, nrow = 100, ncol = 100) |>
+  add.line(a = 0.5, b = 20)
+
+numline_noisy_matrix <- add.noise(numline_base_matrix, sigma = sigma_noise)
+numline_grid <- 1:5
+
+numline_results <- lapply(numline_grid, function(k) {
+  cssa_denoise(
+    numline_noisy_matrix,
+    num_of_lines = k,
+    method = "col.row"
+  )
+})
+
+numline_labels <- vapply(seq_along(numline_grid), function(i) {
+  cur_mse <- mse(numline_base_matrix, numline_results[[i]])
+  sprintf("num_of_lines=%d\nmse=%.6f", numline_grid[i], cur_mse)
+}, character(1))
+
+plot.matrix(
+  numline_results,
+  from.0.to.1 = TRUE,
+  labels = numline_labels,
+  nplots = 3
+)
+```
+
+```{r}
+numline_base_matrix <- matrix(0, nrow = 100, ncol = 100) |>
+  add.line(a = 0.5, b = 20)
+
+numline_noisy_matrix <- add.noise(numline_base_matrix, sigma = sigma_noise)
+numline_grid <- 1:5
+
+numline_results <- lapply(numline_grid, function(k) {
+  cssa_denoise(
+    numline_noisy_matrix,
+    num_of_lines = k,
+    method = "row.row"
+  )
+})
+
+numline_labels <- vapply(seq_along(numline_grid), function(i) {
+  cur_mse <- mse(numline_base_matrix, numline_results[[i]])
+  sprintf("num_of_lines=%d\nmse=%.6f", numline_grid[i], cur_mse)
+}, character(1))
+
+plot.matrix(
+  numline_results,
+  from.0.to.1 = TRUE,
+  labels = numline_labels,
+  nplots = 3
+)
+```
+
+
+
+```{r, include=F}
+# НЕ ДЛЯ ОТЧЕТА, посмотреть распределения сингулярных значений(чтобы потом может быть квантиль взять, вместо 1 num.lines)
+collect_cssa_sigmas <- function(m, method = "col.row") {
+  m_dft <- dft(m)
+  first_step <- strsplit(method, ".", fixed = TRUE)[[1]][1]
+
+  series_list <- if (first_step == "col") {
+    lapply(seq_len(ncol(m_dft)), function(i) m_dft[, i])
+  } else {
+    lapply(seq_len(nrow(m_dft)), function(i) m_dft[i, ])
+  }
+
+  unlist(lapply(series_list, function(x) {
+    s <- ssa(x, kind = "cssa", svd.method = "svd")
+    as.numeric(s$sigma)
+  }))
+}
+
+sigma_method <- "col.row"
+sigma_demo_matrix <- matrix(0, nrow = 100, ncol = 100) |>
+  add.line(a = 0.5, b = 20) |>
+  add.noise(sigma = sigma_noise)
+
+sigma_values <- collect_cssa_sigmas(sigma_demo_matrix, method = sigma_method)
+
+hist(
+  sigma_values,
+  breaks = 40,
+  main = paste("CSSA singular values:", sigma_method),
+  xlab = "Singular value",
+  col = "grey70",
+  border = "white"
+)
+```
+
+Вернемся к `row.row`. Исключение, когда .col алгоритмы не хуже -- одна прямая на диагонали, там все алгоритмы оказываются корректными и col.col работает лучше.
+
+
+
+
+# Hough Transform
+
+```{r}
+source("hough transform/hough_transform.r")
+```
+
+## Функции для ошибки параметров HT
+
+```{r}
+convert_ab_to_rho_theta <- function(a, b) {
+  theta <- atan2(1, -a)
+  rho <- b / sqrt(a^2 + 1)
+  if (theta < 0) {
+    theta <- theta + pi
+    rho <- -rho
+  }
+  c(rho = rho, theta = theta)
+}
+
+find_k_max <- function(acc, k, qrho, qtheta, suppress = FALSE, window = 6) {
+  acc_copy <- acc
+  maxima <- vector("list", k)
+
+  for (i in seq_len(k)) {
+    max_val <- max(acc_copy)
+    idx <- which(acc_copy == max_val, arr.ind = TRUE)[1, ]
+    maxima[[i]] <- c(rho = qrho[idx[1]], theta = qtheta[idx[2]])
+
+    if (suppress) {
+      r_range <- max(1, idx[1] - window):min(nrow(acc_copy), idx[1] + window)
+      c_range <- max(1, idx[2] - window):min(ncol(acc_copy), idx[2] + window)
+      acc_copy[r_range, c_range] <- 0
+    } else {
+      acc_copy[idx[1], idx[2]] <- 0
+    }
+  }
+
+  out <- do.call(rbind, maxima)
+  colnames(out) <- c("rho", "theta")
+  out
+}
+
+compute_err <- function(true, pred) {
+  true <- as.matrix(true)
+  pred <- as.matrix(pred)
+
+  if (ncol(true) != 2 || ncol(pred) != 2) {
+    stop("true and pred must have two columns: rho and theta")
+  }
+
+  if (nrow(true) != nrow(pred)) {
+    stop("true and pred must have the same number of lines")
+  }
+
+  pair_err <- function(tr, tt, pr, pt) {
+    pt_alt <- (pt + pi) %% (2 * pi)
+    dtheta <- atan2(sin(tt - pt), cos(tt - pt))^2
+    dtheta_alt <- atan2(sin(tt - pt_alt), cos(tt - pt_alt))^2
+
+    loss_1 <- (tr - pr)^2 + dtheta
+    loss_2 <- (tr + pr)^2 + dtheta_alt
+
+    if (loss_1 <= loss_2) {
+      c(dr = (tr - pr)^2, dtheta = dtheta, total = loss_1)
+    } else {
+      c(dr = (tr + pr)^2, dtheta = dtheta_alt, total = loss_2)
+    }
+  }
+
+  n_lines <- nrow(true)
+  cost <- matrix(0, nrow = n_lines, ncol = n_lines)
+
+  for (i in seq_len(n_lines)) {
+    for (j in seq_len(n_lines)) {
+      cost[i, j] <- pair_err(
+        true[i, 1], true[i, 2],
+        pred[j, 1], pred[j, 2]
+      )[3]
+    }
+  }
+
+  if (n_lines == 1) {
+    out <- pair_err(true[1, 1], true[1, 2], pred[1, 1], pred[1, 2])
+    return(c(dr = unname(out[1]), dtheta = unname(out[2])))
+  }
+
+  all_perms <- function(v) {
+    if (length(v) == 1) {
+      return(matrix(v, nrow = 1))
+    }
+
+    out <- lapply(seq_along(v), function(i) {
+      rest <- all_perms(v[-i])
+      cbind(v[i], rest)
+    })
+    do.call(rbind, out)
+  }
+
+  best_perm <- NULL
+  best_cost <- Inf
+  perm_mat <- all_perms(seq_len(n_lines))
+  for (row_i in seq_len(nrow(perm_mat))) {
+    cur_perm <- perm_mat[row_i, ]
+    cur_cost <- sum(cost[cbind(seq_len(n_lines), cur_perm)])
+    if (cur_cost < best_cost) {
+      best_cost <- cur_cost
+      best_perm <- cur_perm
+    }
+  }
+
+  dr_total <- 0
+  dtheta_total <- 0
+  for (i in seq_len(n_lines)) {
+    out <- pair_err(
+      true[i, 1], true[i, 2],
+      pred[best_perm[i], 1], pred[best_perm[i], 2]
+    )
+    dr_total <- dr_total + out[1]
+    dtheta_total <- dtheta_total + out[2]
+  }
+
+  c(dr = unname(dr_total), dtheta = unname(dtheta_total))
+}
+```
+
+Проверим на корректность
+
+```{r}
+params1 <- matrix(c(1, 2, 8, 9), ncol=2, nrow=2, byrow=T)
+params2 <- params1[c(2, 1), ]
+
+cat("Params 1: \n")
+params1
+
+cat("\nParams 2: \n")
+params2
+
+cat("\nIndicies of 2 maximums: \n")
+qrho = c(1, 2)
+qtheta = c(1, 2)
+k_maximums <- find_k_max(params1, 2, qrho, qtheta)
+k_maximums
+
+cat("\nDifference between params1 and params2\n")
+compute_err(params1, params2)
+```
+
+
+
+## Выборка ошибок HT
+
+```{r}
+methods_ht <- c("row.row", "col.row", "row.col", "col.col")
+detectors_ht <- list(
+  function(m) cssa_denoise(m, num_of_lines = num_of_lines, method = "row.row"),
+  function(m) cssa_denoise(m, num_of_lines = num_of_lines, method = "col.row"),
+  function(m) cssa_denoise(m, num_of_lines = num_of_lines, method = "row.col"),
+  function(m) cssa_denoise(m, num_of_lines = num_of_lines, method = "col.col")
+)
+
+rho_step_ht <- 1
+theta_step_ht <- 0.01
+
+ht_rows <- vector("list", length = nrow(configs) * n_repeats * length(methods_ht))
+ht_idx <- 1L
+
+for (cfg_i in seq_len(nrow(configs))) {
+  cfg <- configs[cfg_i, ]
+  base_matrix <- make_line_image(
+    n_row = cfg$n_row,
+    n_col = cfg$n_col,
+    a = cfg$a,
+    b = cfg$b
+  )
+  
+  true_line <- matrix(convert_ab_to_rho_theta(cfg$a, cfg$b), nrow = 1)
+  
+  for (rep_i in seq_len(n_repeats)) {
+    noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
+    
+    
+    for (method_i in seq_along(methods_ht)) {
+      method_name <- methods_ht[method_i]
+      detector_fun <- detectors_ht[[method_i]]
+      
+      res <- make_accumulator(
+        noisy_matrix,
+        detector_fun,
+        rho_step = rho_step_ht,
+        theta_step = theta_step_ht
+      )
+
+      pred_plain <- find_k_max(
+        res$accumulator,
+        k = num_of_lines,
+        qrho = res$rho,
+        qtheta = res$theta,
+        suppress = FALSE,
+        window = 0
+      )
+      
+    
+      
+      err_plain <- compute_err(true_line, pred_plain)
+
+      ht_rows[[ht_idx]] <- data.frame(
+        config_id = cfg$config_id,
+        description = cfg$description,
+        n_col = cfg$n_col,
+        n_row = cfg$n_row,
+        a = cfg$a,
+        b = cfg$b,
+        sigma = sigma_noise,
+        rep = rep_i,
+        method = method_name,
+        true_rho = true_line[1, 1],
+        true_theta = true_line[1, 2],
+        pred_rho = pred_plain[1, 1],
+        pred_theta = pred_plain[1, 2],
+        dr = as.numeric(err_plain[1]),
+        dtheta = as.numeric(err_plain[2]),
+        stringsAsFactors = FALSE
+      )
+      ht_idx <- ht_idx + 1L
+    }
+  }
+  
+}
+
+ht_error_samples <- do.call(rbind, ht_rows)
+head(ht_error_samples, 12)
+```
+
+qwerty
+```{r}
+ht_error_samples |> 
+  dplyr::filter(config_id=="steep_full" &  method=="row.row"  ) |> dplyr::pull(dr) |> hist()
+
+
+ht_error_samples |> 
+  dplyr::filter(config_id=="steep_full" &  method=="row.row" & dr > 8000) |>
+  dplyr::distinct(pred_rho, pred_theta, .keep_all = TRUE)
+
+pred_df <- ht_error_samples |>
+  dplyr::filter(config_id == "steep_full", method == "row.row") |>
+  dplyr::distinct(pred_rho, pred_theta, .keep_all = TRUE) |> head()
+
+pred_lines_matrix <- Reduce(
+  function(m, i) {
+    add.line_rt(
+      m,
+      rho = pred_df$pred_rho[i],
+      theta = pred_df$pred_theta[i]
+    )
+  },
+  seq_len(nrow(pred_df)),
+  init = matrix(0, nrow = 100, ncol = 100)
+)
+
+plot.matrix(pred_lines_matrix, from.0.to.1 = TRUE)
+
+```
+
+
+
+```{r, include=FALSE}
+write.csv(ht_error_samples, "ht_error_samples.csv", row.names = FALSE)
+```
+
+## Сводка по ошибкам HT
+
+```{r}
+ht_error_summary <- ht_error_samples |>
+  dplyr::group_by(
+    config_id, description, n_col, n_row, a, b,
+    method
+  ) |>
+  dplyr::summarise(
+    mean_dr = mean(dr),
+    median_dr = median(dr),
+    mean_dtheta = mean(dtheta),
+    median_dtheta = median(dtheta),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(config_id, mean_dr, mean_dtheta)
+
+ht_error_summary
+```
+
+## Матрица средних ошибок HT
+
+```{r}
+dr <- xtabs(mean_dr ~ config_id + method, data = ht_error_summary)
+dr
+
+dr <- xtabs(median_dr ~ config_id + method, data = ht_error_summary)
+dr
+
+ht_error_samples |> 
+  dplyr::filter(config_id=="short_corner" &  method=="row.row"  ) |> dplyr::pull(dr) |> hist()
+```
+
+Нормировка
+```{r}
+dr_norm <- t(apply(dr, 1, function(x) {
+  row_min <- min(x)
+  if (row_min == 0) {
+    ifelse(x == 0, 1, Inf)
+  } else {
+    x / row_min
+  }
+}))
+dr_norm
+```
+
+
+Аналогично для $\Delta\theta$:
+```{r}
+dt <- xtabs(mean_dtheta ~ config_id + method, data = ht_error_summary)
+dt
+```
+
+```{r}
+dt_norm <- sweep(dt, 1, apply(dt, 1, min), "/")
+dt_norm
+```
+
+Возможно, с увеличением размера выборки, результат изменится. Пока наблюдается доминирование `row.row`. Заметим, что на изображении с прямой $y=2x-1$ (steep_full) наблюдаются аномально высокие значения отклонения `row.row`, хотя при такой конфигурации сигнал попадает на каждую строку матрицы.
+
+
+```{r, include=F}
+demo_matrix <- matrix(0, nrow = 100, ncol = 100) |>
+  add.line(a = 0.5, b = 20) |>
+  add.noise(sigma = sigma_noise)
+
+demo_results <- list(
+  "input" = demo_matrix,
+  "row.row" = cssa_denoise(demo_matrix, num_of_lines = 1L, method = "row.row"),
+  "col.row" = cssa_denoise(demo_matrix, num_of_lines = 1L, method = "col.row"),
+  "row.col" = cssa_denoise(demo_matrix, num_of_lines = 1L, method = "row.col"),
+  "col.col" = cssa_denoise(demo_matrix, num_of_lines = 1L, method = "col.col")
+)
+
+plot.matrix(
+  demo_results,
+  from.0.to.1 = TRUE,
+  labels = names(demo_results),
+  nplots = 3
+)
+```
+
+
+
+Оценка параметра $theta$.
+```{r}
+# HT experiment: compare row.row vs col.row on all lines from configs
+# Edit parameters here
+
+source("hough transform/hough_transform.r")
+source("ssa-based methods/cssa-transform.r")
+
+seed <- 1111
+n_samples <- 16
+sigma_noise <- 0.4
+
+methods_ht <- c("row.row", "col.row")
+num_of_lines_det <- 1L
+detector_q <- 0.9
+
+rho_step_ht <- 1
+theta_step_ht <- 0.001
+line_intensity <- 1
+
+set.seed(seed)
+
+ab_to_rho_theta <- function(a, b) {
+  theta <- atan2(1, -a)
+  rho <- b / sqrt(a^2 + 1)
+  if (theta < 0) {
+    theta <- theta + pi
+    rho <- -rho
+  }
+  c(rho = rho, theta = theta)
+}
+
+top1_ht <- function(acc, qrho, qtheta) {
+  idx <- which(acc == max(acc), arr.ind = TRUE)[1, ]
+  c(rho = qrho[idx[1]], theta = qtheta[idx[2]])
+}
+
+line_error <- function(true_rho, true_theta, pred_rho, pred_theta) {
+  pred_theta_alt <- (pred_theta + pi) %% (2 * pi)
+
+  dtheta_1 <- atan2(sin(true_theta - pred_theta), cos(true_theta - pred_theta))^2
+  dtheta_2 <- atan2(sin(true_theta - pred_theta_alt), cos(true_theta - pred_theta_alt))^2
+
+  loss_1 <- (true_rho - pred_rho)^2 + dtheta_1
+  loss_2 <- (true_rho + pred_rho)^2 + dtheta_2
+
+  if (loss_1 <= loss_2) {
+    c(
+      dr = (true_rho - pred_rho)^2,
+      dtheta = dtheta_1
+    )
+  } else {
+    c(
+      dr = (true_rho + pred_rho)^2,
+      dtheta = dtheta_2
+    )
+  }
+}
+
+cssa_detector_q <- function(matrix, num_of_lines = 1L, method = "row.row", q = 0.9) {
+  cleaned_matrix <- switch(
+    method,
+    "col.col" = matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re(),
+    "col.row" = matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.row() |> Re(),
+    "row.col" = matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.col() |> Re(),
+    "row.row" = matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.row() |> Re(),
+    stop("Unknown method: ", method)
+  )
+
+  cleaned_matrix <- as.matrix(cleaned_matrix)
+  cleaned_matrix[cleaned_matrix < 0.01] <- 0
+  cleaned_matrix[cleaned_matrix > 0.99] <- 1
+
+  thr <- as.numeric(quantile(abs(cleaned_matrix), probs = q, na.rm = TRUE))
+  result_matrix <- cleaned_matrix
+  result_matrix[abs(result_matrix) <= thr] <- 0
+  result_matrix[result_matrix < 0.01] <- 0
+  result_matrix[result_matrix > 0.99] <- 1
+  result_matrix
+}
+
+rows_out <- vector("list", length = nrow(configs) * n_samples * length(methods_ht))
+idx_out <- 1L
+
+for (cfg_i in seq_len(nrow(configs))) {
+  cfg <- configs[cfg_i, ]
+
+  base_matrix <- matrix(0, nrow = cfg$n_row, ncol = cfg$n_col) |>
+    add.line(a = cfg$a, b = cfg$b, intensity = line_intensity)
+
+  true_rt <- ab_to_rho_theta(cfg$a, cfg$b)
+
+  for (sample_i in seq_len(n_samples)) {
+    noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
+
+    for (method_name in methods_ht) {
+      ht <- make_accumulator(
+        noisy_matrix,
+        detector = function(m) {
+          cssa_detector_q(
+            m,
+            num_of_lines = num_of_lines_det,
+            method = method_name,
+            q = detector_q
+          )
+        },
+        rho_step = rho_step_ht,
+        theta_step = theta_step_ht
+      )
+
+      pred_rt <- top1_ht(ht$accumulator, ht$rho, ht$theta)
+      err <- line_error(true_rt[[1]], true_rt[[2]], pred_rt[[1]], pred_rt[[2]])
+
+      rows_out[[idx_out]] <- data.frame(
+        config_id = cfg$config_id,
+        description = cfg$description,
+        sample = sample_i,
+        method = method_name,
+        a_true = cfg$a,
+        b_true = cfg$b,
+        true_rho = unname(true_rt["rho"]),
+        true_theta = unname(true_rt["theta"]),
+        pred_rho = unname(pred_rt["rho"]),
+        pred_theta = unname(pred_rt["theta"]),
+        dr = unname(err["dr"]),
+        dtheta = unname(err["dtheta"]),
+        theta_err = sqrt(unname(err["dtheta"])),
+        stringsAsFactors = FALSE
+      )
+      idx_out <- idx_out + 1L
+    }
+  }
+}
+
+ht_theta_samples <- do.call(rbind, rows_out)
+
+ht_theta_summary <- ht_theta_samples |>
+  dplyr::group_by(config_id, description, method) |>
+  dplyr::summarise(
+    mean_theta_err = mean(theta_err),
+    median_theta_err = median(theta_err),
+    sd_theta_err = sd(theta_err),
+    mean_dr = mean(dr),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(config_id, mean_theta_err)
+
+ht_theta_samples
+ht_theta_summary
+
+xtabs(mean_theta_err ~ config_id + method, data = ht_theta_summary)
+xtabs(median_theta_err ~ config_id + method, data = ht_theta_summary)
+```
+
+
+
