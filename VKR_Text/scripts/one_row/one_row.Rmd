@@ -1,0 +1,799 @@
+---
+title: "CSSA для одной строки"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup}
+rm(list=ls())
+locate_one_row_dir <- function() {
+  candidates <- character()
+
+  input_path <- tryCatch(knitr::current_input(), error = function(e) "")
+  if (nzchar(input_path)) {
+    candidates <- c(
+      candidates,
+      dirname(normalizePath(input_path, winslash = "/", mustWork = FALSE))
+    )
+  }
+
+  candidates <- c(
+    candidates,
+    normalizePath(getwd(), winslash = "/", mustWork = FALSE),
+    normalizePath(file.path(getwd(), "scripts", "one_row"), winslash = "/", mustWork = FALSE)
+  )
+
+  candidates <- unique(candidates[file.exists(file.path(candidates, "one_row.Rmd"))])
+  if (length(candidates) == 0) {
+    stop("Не удалось определить папку с файлом one_row.Rmd")
+  }
+
+  normalizePath(candidates[1], winslash = "/", mustWork = TRUE)
+}
+
+script_dir <- locate_one_row_dir()
+project_root <- normalizePath(file.path(script_dir, "..", ".."), winslash = "/", mustWork = TRUE)
+repo_root <- normalizePath(file.path(project_root, ".."), winslash = "/", mustWork = TRUE)
+setwd(script_dir)
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  cache = TRUE,
+  cache.path = "one-row_cache/",
+  fig.path = "one-row_files/figure-html/",
+  fig.width = 9,
+  fig.height = 5
+)
+
+source(file.path(repo_root, "ssa-based methods", "cssa-transform.r"))
+
+set.seed(1111)
+```
+
+Вспомогательные функции
+```{r helpers}
+# Обрезаем значения до рабочего диапазона и зануляем совсем малые хвосты
+clip01 <- function(m, low = 0.001, high = 0.99) {
+  m <- as.matrix(m)
+  m[!is.finite(m)] <- 0
+  m[m < low] <- 0
+  m[m > high] <- 1
+  m
+}
+```
+
+
+Тестовый пример.
+```{r parameters}
+n <- 100
+signal_ind <- 38
+sigma_noise <- 0.2
+num_components_signal <- 1
+
+clean_matrix <- matrix(0, nrow = 1, ncol = n)
+clean_matrix[1, signal_ind] <- 1
+noisy_matrix <- add.noise(clean_matrix, sigma = sigma_noise)
+
+
+clean_row <- clean_matrix[1, ]
+noisy_row <- noisy_matrix[1, ]
+
+clean_dft_matrix <- dft(clean_matrix)
+noisy_dft_matrix <- dft(noisy_matrix)
+
+clean_dft <- clean_dft_matrix[1, ]
+noisy_dft <- noisy_dft_matrix[1, ]
+
+clean_fit <- ssa(clean_dft, kind = "cssa", svd.method = "svd")
+noisy_fit <- ssa(noisy_dft, kind = "cssa", svd.method = "svd")
+```
+
+Смотрим на сигнал и сигнал с шумам
+```{r signal-view}
+old_par <- par(mfrow = c(2, 1), mar = c(3, 4, 3, 1))
+
+plot(
+  clean_row,
+  type = "h",
+  lwd = 3,
+  col = "black",
+  xlab = "Индекс",
+  ylab = "Амплитуда",
+  main = "Чистый сигнал"
+)
+
+plot(
+  noisy_row,
+  type = "h",
+  lwd = 2,
+  col = "grey30",
+  xlab = "Индекс",
+  ylab = "Амплитуда",
+  main = "Та же строка после добавления шума"
+)
+
+par(old_par)
+```
+
+Смотрим на DFT всей строки, а именно: модуль и аргумент.
+```{r dft-view}
+old_par <- par(mfrow = c(2, 2), mar = c(3, 4, 3, 1))
+
+plot(
+  Mod(clean_dft),
+  type = "h",
+  lwd = 2,
+  col = "black",
+  xlab = "Частотный индекс",
+  ylab = "|DFT|",
+  main = "Чистая строка: модуль DFT"
+)
+
+plot(
+  Arg(clean_dft),
+  type = "l",
+  lwd = 2,
+  col = "black",
+  xlab = "Частотный индекс",
+  ylab = "arg(DFT)",
+  main = "Чистая строка: фаза DFT"
+)
+
+plot(
+  Mod(noisy_dft),
+  type = "h",
+  lwd = 2,
+  col = "grey30",
+  xlab = "Частотный индекс",
+  ylab = "|DFT|",
+  main = "Шумная строка: модуль DFT"
+)
+
+plot(
+  Arg(noisy_dft),
+  type = "l",
+  lwd = 2,
+  col = "grey30",
+  xlab = "Частотный индекс",
+  ylab = "arg(DFT)",
+  main = "Шумная строка: фаза DFT"
+)
+
+par(old_par)
+```
+
+Сравниваем сингулярные значения для чистой и шумной строки
+Для чистого импульса ожидается практически ранг 1, а шум растягивает спектр.
+```{r singular-values}
+sigma_df <- data.frame(
+  component = 1:12,
+  clean = round(clean_fit$sigma[1:12], 6),
+  noisy = round(noisy_fit$sigma[1:12], 6)
+)
+
+sigma_df
+
+matplot(
+  sigma_df$component,
+  sigma_df[, c("clean", "noisy")],
+  type = "b",
+  pch = 19,
+  lty = 1,
+  log = "y",
+  col = c("black", "firebrick"),
+  xlab = "Номер компоненты",
+  ylab = "Сингулярное значение",
+  main = "График сингулярного спектра"
+)
+
+legend(
+  "topright",
+  legend = c("Чистая строка", "Шумная строка"),
+  col = c("black", "firebrick"),
+  lty = 1,
+  pch = 19,
+  bty = "n"
+)
+```
+
+Смотрим на левые сингулярные векторы `U` для шумной строки.
+```{r complex-vector-helper}
+# Отрисовка действительной и мнимой части
+plot_complex_parts <- function(z, main_text) {
+  plot(
+    Re(z),
+    type = "l",
+    col = "steelblue",
+    lwd = 2,
+    xlab = "Индекс",
+    ylab = "Значение",
+    main = main_text
+  )
+  lines(Im(z), col = "firebrick", lwd = 2)
+  legend(
+    "topright",
+    legend = c("Re", "Im"),
+    col = c("steelblue", "firebrick"),
+    lty = 1,
+    bty = "n"
+  )
+}
+```
+
+**Замечание**. Для идеального сигнала $e_j$ его преобразование фурье -- это точки на единичной окружности. Траекторная матрица имеет ранг 1 и собственный вектор для ненулевого собственного числа --- это вектор, чьи компоненты тоже находятся на окружности. Если посмотреть вещественные и мнимые части, то это будут косинусы и синусы соответствующих углов. Для сравнения посмотрим на графики с зашумлением
+
+```{r left-singular-vectors}
+old_par <- par(mfrow = c(2, 2), mar = c(3, 4, 3, 1))
+
+for (j in 1:10) {
+  plot_complex_parts(noisy_fit$U[, j], paste("U[,", j, "]"))
+}
+
+par(old_par)
+```
+
+```{r right-singular-vectors}
+old_par <- par(mfrow = c(2, 2), mar = c(3, 4, 3, 1))
+
+for (j in 1:4) {
+  plot_complex_parts(noisy_fit$V[, j], paste("V[,", j, "]"))
+}
+
+par(old_par)
+```
+
+```{r center-signal-case-old, eval=FALSE, include=FALSE}
+old_seed <- .Random.seed
+signal_ind_center <- 500
+
+center_clean_matrix <- matrix(0, nrow = 1, ncol = n)
+center_clean_matrix[1, signal_ind_center] <- 1
+
+set.seed(1111)
+center_noisy_matrix <- add.noise(center_clean_matrix, sigma = sigma_noise)
+.Random.seed <- old_seed
+
+center_noisy_dft_matrix <- dft(center_noisy_matrix)
+center_noisy_dft <- center_noisy_dft_matrix[1, ]
+center_noisy_fit <- ssa(center_noisy_dft, kind = "cssa", svd.method = "svd")
+```
+
+```{r center-left-singular-vectors-old, eval=FALSE, include=FALSE}
+old_par <- par(mfrow = c(3, 4), mar = c(3, 4, 3, 1))
+
+for (j in 1:12) {
+  plot_complex_parts(center_noisy_fit$U[, j], paste("signal_ind = 500, U[,", j, "]"))
+}
+
+par(old_par)
+```
+Первую компоненту можно проинтерпретировать как то, о чем я написал выше. Остальное -- шум. Но так бывает не всегда: ниже для координаты 500 показаны сингулярные векторы U покомпонентно:
+
+```{r center-signal-case}
+old_seed <- .Random.seed
+signal_ind_center <- n/2
+
+center_clean_matrix <- matrix(0, nrow = 1, ncol = n)
+center_clean_matrix[1, signal_ind_center] <- 1
+
+set.seed(1111)
+center_noisy_matrix <- add.noise(center_clean_matrix, sigma = sigma_noise)
+.Random.seed <- old_seed
+
+center_noisy_dft_matrix <- dft(center_noisy_matrix)
+center_noisy_dft <- center_noisy_dft_matrix[1, ]
+center_noisy_fit <- ssa(center_noisy_dft, kind = "cssa", svd.method = "svd")
+```
+
+```{r center-left-singular-vectors}
+old_par <- par(mfrow = c(3, 4), mar = c(3, 4, 3, 1))
+
+for (j in 1:12) {
+  plot_complex_parts(center_noisy_fit$U[, j], paste("signal_ind = 500, U[,", j, "]"))
+}
+
+par(old_par)
+```
+Для первых 4 выведем графики `Im~Re`
+```{r}
+idx <- 1:4
+
+par(mfrow = c(2, 2))
+for (i in idx) {
+  u <- center_noisy_fit$U[, i]
+  plot(
+    u,
+    type = "b",
+    pch = 19,
+    xlab = "Re(U)",
+    ylab = "Im(U)",
+    main = paste("U[,", i, "], sigma =", round(noisy_fit$sigma[i], 2) ) , asp=1
+  )
+}
+```
+Компонента с самым большим сингулярным числом не похожа на вектор комплексных эекспонент. Впрочем, результат все равно хороший:
+
+```{r}
+center_noisy_matrix |> dft() |> cssa.row(num.line=1) |> idft.row() |> Re() |>as.vector() |> plot() 
+
+```
+
+
+
+Cмотрим на реконструкцию в спектральной области по группам `1:k`, k=1,2,3,4.
+```{r reconstruction-objects}
+reconstruct_group <- function(fit, idx) {
+  reconstruct(fit, groups = list(signal = idx))$signal
+}
+
+component_grid <- c(1, 2, 3, 4)
+
+recon_dft_list <- setNames(
+  lapply(component_grid, function(k) reconstruct_group(noisy_fit, 1:k)),
+  paste0("k=", component_grid)
+)
+
+recon_matrix_list <- lapply(recon_dft_list, function(z) Re(idft.row(matrix(z, nrow = 1))))
+recon_row_list <- lapply(recon_matrix_list, function(m) m[1, ])
+recon_row_clipped <- lapply(recon_matrix_list, function(m) clip01(m)[1, ])
+```
+
+
+
+
+```{r reconstructed-dft}
+old_par <- par(mfrow = c(4, 2), mar = c(3, 4, 3, 1))
+
+for (nm in names(recon_dft_list)) {
+  plot(
+    Mod(recon_dft_list[[nm]]),
+    type = "h",
+    lwd = 2,
+    col = "black",
+    xlab = "Частотный индекс",
+    ylab = "|DFT|",
+    main = nm
+  )
+
+  plot(
+    Arg(recon_dft_list[[nm]]),
+    type = "l",
+    lwd = 2,
+    col = "steelblue",
+    xlab = "Частотный индекс",
+    ylab = "arg(DFT)",
+    main = nm
+  )
+}
+
+par(old_par)
+```
+Видно, что с одной лишь компонентой аргумент выглядит более-менее похожим на идеальный, хотя модуль DFT неоднородный(а в идеальном случае должен быть тождественным 1). Но это группировка `1:k`. Посмотрим на парный график собственных векторов.
+
+```{r paired-eigenvectors}
+plot(
+  noisy_fit,
+  type = "paired"
+)
+
+```
+В теории, так как ранг 1, то никаких фигур по типу кругов/спиралей здесь отрисовываться не может. 
+
+**Но, возможно, есть то, чего я не вижу.**
+
+График `Im~Re` для первых 12 собственных векторов.
+```{r, fig.width=10, fig.height=10}
+idx <- 1:12
+
+par(mfrow = c(2, 2))
+for (i in idx) {
+  u <- noisy_fit$U[, i]
+  plot(
+    u,
+    type = "b",
+    pch = 19,
+    xlab = "Re(U)",
+    ylab = "Im(U)",
+    main = paste("U[,", i, "], sigma =", round(noisy_fit$sigma[i], 2) ) , asp=1
+  )
+}
+
+
+```
+Идеальный случай -- окружность, но многие векторы выводятся как толстые окружности, поэтому не понятно.
+
+Оценка после `idft.row`:
+```{r reconstructed-row}
+old_par <- par(mfrow = c(4, 1), mar = c(3, 4, 3, 1))
+
+for (nm in names(recon_row_list)) {
+  plot(
+    recon_row_list[[nm]],
+    type = "h",
+    lwd = 2,
+    col = "grey20",
+    xlab = "Индекс",
+    ylab = "Амплитуда",
+    main = paste("Оцененный сигнал,", nm)
+  )
+  abline(v = signal_ind, col = "firebrick", lty = 2)
+}
+
+par(old_par)
+```
+
+Далее выводим информацию о точках оцененного сигнала, которые не попали туда, куда мы хотели.
+```{r tail-summary-helpers}
+tail_metrics <- function(x, signal_ind) {
+  total_abs <- sum(abs(x))
+  off_peak_abs <- sum(abs(x[-signal_ind]))
+
+  data.frame(
+    signal_ind = signal_ind,
+    intensity = x[signal_ind],
+    max_value = max(x),
+    max_off_peak = max(abs(x[-signal_ind])),
+    share = off_peak_abs / total_abs,
+    positive_count = sum(x > 0)
+  )
+}
+
+# Для набора порогов считаем, сколько значений остаются положительными.
+threshold_table <- function(x, thresholds = c(0, 0.001, 0.01, 0.05, 0.1)) {
+  data.frame(
+    threshold = thresholds,
+    count = vapply(thresholds, function(thr) sum(x > thr), numeric(1)),
+    stringsAsFactors = FALSE
+  )
+}
+```
+
+
+```{r tail-summary}
+tail_summary_df <- do.call(
+  rbind,
+  list(
+    clean = tail_metrics(clean_row, signal_ind),
+    noisy = tail_metrics(noisy_row, signal_ind),
+    recon_k1 = tail_metrics(recon_row_list$`k=1`, signal_ind),
+    recon_k1_clipped = tail_metrics(recon_row_clipped$`k=1`, signal_ind)
+  )
+)
+
+tail_summary_df$series <- rownames(tail_summary_df)
+rownames(tail_summary_df) <- NULL
+tail_summary_df <- tail_summary_df[, c("series", setdiff(names(tail_summary_df), "series"))]
+
+tail_summary_df
+```
+Смотрим на `share`: простой реконструированный ряд имеет 56% массы, разбросанной по разным пикселям. Если мы приведем матрицу к виду [0, 1], то этот процент сократится до 33.
+
+Посмотрим, сколько остается ненулевых элементов при разном пороговании
+```{r}
+threshold_df <- data.frame(
+  threshold = c(0, 0.001, 0.01, 0.05, 0.1),
+  recon_k1 = threshold_table(recon_row_list$`k=1`)$count,
+  recon_k1_clipped = threshold_table(recon_row_clipped$`k=1`)$count
+)
+
+threshold_df
+```
+Видно, что количество резко падает при пороге 0.01. В одной из реализаций шумоподавления на основе CSSA кроме оценки было еще порогование по квантилю.
+
+
+
+### Важно
+В этом чанке я попытался найти индексы(хотя бы 1) для фиксированного шума, для которых оценка дает не тот результат, то есть максимум достигается не в изначальном месте.
+
+Это тот самый случай когда на матрице 100 на 100 некоторые пиксели отклонялись от линии прямой.
+
+Здесь написан весь код(то есть полный проход по всем индексам и тп), но я поменял начальный индекс с 1 до 40, чтобы долго не ждать, ведь я знаю, на каком индексе будет ошибка.
+```{r fixed-noise-bad-case-analysis, fig.width=10, fig.height=8}
+set.seed(1111)
+fixed_noise_matrix <- add.noise(matrix(0, nrow = 1, ncol = n), sigma = sigma_noise)
+
+build_fixed_noise_case <- function(signal_ind, noise_matrix) {
+  clean_matrix <- matrix(0, nrow = 1, ncol = n)
+  clean_matrix[1, signal_ind] <- 1
+
+  noisy_matrix <- clean_matrix + noise_matrix
+  noisy_dft_matrix <- dft(noisy_matrix)
+  noisy_fit <- ssa(noisy_dft_matrix[1, ], kind = "cssa", svd.method = "svd")
+
+  est <- noisy_dft_matrix |>
+    cssa.row(num.line = num_components_signal) |>
+    idft.row() |>
+    Re()
+
+  est <- as.numeric(est[1, ])
+
+  list(
+    signal_ind = signal_ind,
+    max_ind = which.max(est),
+    clean_matrix = clean_matrix,
+    noisy_matrix = noisy_matrix,
+    noisy_dft_matrix = noisy_dft_matrix,
+    fit = noisy_fit,
+    est = est
+  )
+}
+
+bad_case <- NULL
+for (candidate_signal_ind in 7:n) {
+  candidate_case <- build_fixed_noise_case(candidate_signal_ind, fixed_noise_matrix)
+
+  if (candidate_case$max_ind != candidate_case$signal_ind) {
+    bad_case <- candidate_case
+    break
+  }
+}
+
+noise_only_dft_matrix <- dft(fixed_noise_matrix)
+noise_only_fit <- ssa(noise_only_dft_matrix[1, ], kind = "cssa", svd.method = "svd")
+noise_only_est <- noise_only_dft_matrix |>
+  cssa.row(num.line = num_components_signal) |>
+  idft.row() |>
+  Re()
+noise_only_est <- as.numeric(noise_only_est[1, ])
+noise_only_max_ind <- which.max(noise_only_est)
+
+bad_case_summary <- data.frame(
+  signal_ind = bad_case$signal_ind,
+  max_ind = bad_case$max_ind,
+  noise_only_max_ind = noise_only_max_ind,
+  signal_value = bad_case$est[bad_case$signal_ind],
+  max_value = bad_case$est[bad_case$max_ind],
+  noise_only_max_value = noise_only_est[noise_only_max_ind]
+)
+
+bad_case_summary
+
+signal_ind <- bad_case_summary$signal_ind # Запоминаем индекс сигнала
+
+sigma_compare_df <- data.frame(
+  component = 1:12,
+  bad_case = round(bad_case$fit$sigma[1:12], 6),
+  noise_only = round(noise_only_fit$sigma[1:12], 6)
+)
+
+sigma_compare_df
+
+old_par <- par(mfrow = c(2, 2), mar = c(3, 4, 3, 1))
+
+plot(
+  bad_case$est,
+  type = "h",
+  lwd = 2,
+  col = "grey20",
+  xlab = "Индекс",
+  ylab = "Амплитуда",
+  main = paste("Плохой случай:", bad_case$signal_ind, "->", bad_case$max_ind)
+)
+abline(v = bad_case$signal_ind, col = "firebrick", lty = 2)
+abline(v = bad_case$max_ind, col = "steelblue", lty = 2)
+
+plot(
+  noise_only_est,
+  type = "h",
+  lwd = 2,
+  col = "grey20",
+  xlab = "Индекс",
+  ylab = "Амплитуда",
+  main = paste("Тот же шум без сигнала:", noise_only_max_ind)
+)
+abline(v = noise_only_max_ind, col = "steelblue", lty = 2)
+
+plot_complex_parts(bad_case$fit$U[, 1], "bad case: U[, 1]")
+plot_complex_parts(noise_only_fit$U[, 1], "noise only: U[, 1]")
+
+par(old_par)
+
+old_par <- par(mfrow = c(3, 4), mar = c(3, 4, 3, 1))
+
+for (j in 1:12) {
+  plot_complex_parts(
+    bad_case$fit$U[, j],
+    paste("bad case, U[,", j, "]")
+  )
+}
+
+par(old_par)
+
+
+```
+
+
+
+Выбрали номер `index=38`.
+Итого, реконструкция дала не тот результат, потому что формально выбиралась компонента с наибольшим сингулярным числом. При этом я заметил знакомые синусоиды на векторе номер 3(вообще, из за выбросов, там были прекрасные синусоиды на индексах 1, 7, которым соответствовали максимумы на месте 100 и 12 соответственно, поэтому не следует смотреть на синусоиды, ведь в итоге оказался только 3 по номеру). Попробуем реконструировать по нему:
+```{r}
+
+
+rec5 <- Rssa::reconstruct(
+  bad_case$fit,
+  groups = list(Seasonality = c(3))
+)$Seasonality
+
+row5 <- rec5 |>
+  matrix(nrow = 1) |>
+  idft.row() |>
+  Re()
+
+row5 <- as.numeric(row5[1, ])
+
+which.max(row5)
+
+```
+
+```{r bad-case-good-reconstruction}
+eig_idx <- 3
+
+reconstruct_row_from_component <- function(fit, idx) {
+  reconstruct(fit, groups = list(signal = idx))$signal |>
+    matrix(nrow = 1) |>
+    idft.row() |>
+    Re() |>
+    as.numeric()
+}
+
+bad_case_est_idx <- reconstruct_row_from_component(bad_case$fit, eig_idx)
+noise_only_est_idx <- reconstruct_row_from_component(noise_only_fit, eig_idx)
+
+bad_case_max_ind_idx <- which.max(bad_case_est_idx)
+noise_only_max_ind_idx <- which.max(noise_only_est_idx)
+
+old_par <- par(mfrow = c(2, 2), mar = c(3, 4, 3, 1))
+
+plot(
+  bad_case_est_idx,
+  type = "h",
+  lwd = 2,
+  col = "grey20",
+  xlab = "Индекс",
+  ylab = "Амплитуда",
+  main = paste("Плохой случай:", bad_case$signal_ind, "->", bad_case_max_ind_idx)
+)
+abline(v = bad_case$signal_ind, col = "firebrick", lty = 2)
+abline(v = bad_case_max_ind_idx, col = "steelblue", lty = 2)
+
+plot(
+  noise_only_est_idx,
+  type = "h",
+  lwd = 2,
+  col = "grey20",
+  xlab = "Индекс",
+  ylab = "Амплитуда",
+  main = paste("Тот же шум без сигнала:", noise_only_max_ind_idx)
+)
+abline(v = noise_only_max_ind_idx, col = "steelblue", lty = 2)
+
+plot_complex_parts(bad_case$fit$U[, eig_idx], paste0("bad case: U[, ", eig_idx, "]"))
+plot_complex_parts(noise_only_fit$U[, eig_idx], paste0("noise only: U[, ", eig_idx, "]"))
+
+par(old_par)
+```
+
+
+
+```{r}
+m <- matrix(0, 1, n)
+m[signal_ind] <- 1
+m_noisy <- m + fixed_noise_matrix
+
+
+m_noisy |> as.vector() |> plot()
+```
+Заметим, что максимум в зашумленной матрице достигается даже не на 38 индексе, поэтому точка сигнала перемешалась с шумом. Отсюда, кстати, сингулярные значения такие же как у шумовой матрицы без сигнала(см датафрейм выше).
+
+
+Выводы: 
+- Плохая с точки зрения преобразования Хафа локализация непонятно как решается, если, конечно, не учитывать обычный фильтр по порогу(фиксированный или квантильный).
+- Точки выбиваются из-за неправильного выбора компонент в реконструкции. 
+
+```{r smear-case-decomposition, fig.width=10, fig.height=8}
+find_smear_case <- function(noise_matrix, search_idx = 5:(ncol(noise_matrix) - 5)) {
+  candidate_info <- lapply(search_idx, function(sig_idx) {
+    case_obj <- build_fixed_noise_case(sig_idx, noise_matrix)
+    est_pos <- pmax(case_obj$est, 0)
+
+    if (which.max(est_pos) != sig_idx) {
+      return(NULL)
+    }
+
+    near_idx <- max(1, sig_idx - 2):min(length(est_pos), sig_idx + 2)
+    side_mass <- sum(est_pos[near_idx]) - est_pos[sig_idx]
+    total_mass <- sum(est_pos)
+    smear_score <- side_mass / max(total_mass, 1e-12)
+
+    if (side_mass <= 0) {
+      return(NULL)
+    }
+
+    data.frame(
+      signal_ind = sig_idx,
+      peak = est_pos[sig_idx],
+      side_mass = side_mass,
+      total_mass = total_mass,
+      smear_score = smear_score
+    )
+  })
+
+  candidate_info <- Filter(Negate(is.null), candidate_info)
+  if (length(candidate_info) == 0) {
+    stop("Не удалось найти пример с растеканием для фиксированного шума.")
+  }
+
+  info_df <- do.call(rbind, candidate_info)
+  best_row <- info_df[which.max(info_df$smear_score), ]
+
+  list(
+    case = build_fixed_noise_case(best_row$signal_ind, noise_matrix),
+    summary = best_row
+  )
+}
+
+smear_obj <- find_smear_case(fixed_noise_matrix)
+smear_case <- smear_obj$case
+smear_summary <- smear_obj$summary
+
+smear_component_dft <- Rssa::reconstruct(
+  smear_case$fit,
+  groups = list(signal = 1)
+)$signal
+
+clean_smear_matrix <- matrix(0, nrow = 1, ncol = n)
+clean_smear_matrix[1, smear_case$signal_ind] <- 1
+clean_smear_dft <- dft(clean_smear_matrix)[1, ]
+
+smear_summary
+
+old_par <- par(mfrow = c(2, 2), mar = c(3, 4, 3, 1))
+
+plot(
+  smear_case$est,
+  type = "h",
+  lwd = 2,
+  col = "grey20",
+  xlab = "Индекс",
+  ylab = "Амплитуда",
+  main = paste("Растекание:", smear_case$signal_ind)
+)
+abline(v = smear_case$signal_ind, col = "firebrick", lty = 2)
+
+plot(
+  Mod(smear_component_dft),
+  type = "h",
+  lwd = 2,
+  col = "grey20",
+  xlab = "Частотный индекс",
+  ylab = "Амплитуда",
+  main = "Амплитуда 1-й компоненты в спектре"
+)
+abline(h = Mod(clean_smear_dft[1]), col = "firebrick", lty = 2)
+legend(
+  "topright",
+  legend = c("1-я компонента", "идеальная амплитуда"),
+  col = c("grey20", "firebrick"),
+  lty = c(1, 2),
+  lwd = c(2, 1),
+  bty = "n"
+)
+
+plot(
+  Arg(smear_component_dft),
+  type = "l",
+  lwd = 2,
+  col = "steelblue",
+  xlab = "Частотный индекс",
+  ylab = "arg(DFT)",
+  main = "Фаза 1-й компоненты в спектре"
+)
+
+plot_complex_parts(smear_case$fit$U[, 1], "smear case: U[, 1]")
+
+par(old_par)
+```
+
