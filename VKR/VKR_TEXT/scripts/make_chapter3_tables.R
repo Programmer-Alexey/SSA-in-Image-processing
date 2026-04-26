@@ -242,7 +242,7 @@ dir.create("tables/chapter3", recursive = TRUE, showWarnings = FALSE)
 dir.create("images/chapter3", recursive = TRUE, showWarnings = FALSE)
 
 file.copy(
-  file.path(repo_root, "line_experiment3_files", "figure-html", "configuration-preview-1.png"),
+  file.path(repo_root, "line_experiments", "line_experiment3_files", "figure-html", "configuration-preview-1.png"),
   "images/chapter3/configuration-preview-1.png",
   overwrite = TRUE
 )

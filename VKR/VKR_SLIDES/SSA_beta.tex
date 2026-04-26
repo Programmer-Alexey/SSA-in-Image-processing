@@ -1,0 +1,905 @@
+\documentclass[unicode,notheorems]{beamer}
+
+\makeatletter
+\def\input@path{{styles/}}
+\makeatother
+
+\mode<presentation>
+{
+	\usetheme[numbers,totalnumbers,compress,nologo]{Statmod}
+	\setbeamercovered{transparent}
+}
+
+\usefonttheme[onlymath]{serif}
+\setbeamertemplate{navigation symbols}{}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[russian]{babel}
+\usepackage{amsmath,amssymb,amsthm,amsfonts}
+\usepackage{graphicx}
+\usepackage{tabularx}
+\usepackage{float}
+\usepackage{tikz}
+\usetikzlibrary{positioning}
+
+\def\figurename{Рис.}
+\setbeamertemplate{caption}[numbered]
+\setbeamertemplate{caption label separator}{. }
+
+\title{Некоторые алгоритмы для обнаружения прямых линий на изображениях}
+\author{Фалин Алексей Дмитриевич, гр. 22.Б04-мм}
+\institute[СПбГУ]{Санкт-Петербургский государственный университет \\
+	Математико-механический факультет \\
+	Кафедра статистического моделирования \\
+	\vspace{0.5cm}
+	Научный руководитель: д.ф.-м.н. Голяндина Н.Э.}
+\date{Санкт-Петербург\\2025 г.}
+
+\begin{document}
+
+\begin{frame}[plain]
+	\titlepage
+\end{frame}
+
+\section{Постановка задачи}
+
+\begin{frame}{Постановка задачи}
+	\begin{block}{Постановка задачи обнаружения прямых}
+		\begin{itemize}
+			\item Наблюдаемое изображение: матрица яркостей $\mathbf{M} \in \mathbb{R}^{m \times n}$.
+
+			\item Модель наблюдения:
+			\[
+			\mathbf{M} = \mathbf{S} + \mathbf{R},
+			\]
+			где $(\bf{R})_{ij}\stackrel{\text{i.i.d.}}{\sim}\mathcal{N}(0,\sigma^2)$.
+			
+			\item В рассматриваемом эксперименте компонента сигнала $\mathbf{S}$ такова, что пикселям на $k$-й прямой соответствует константа $c_k>0$, задающая её интенсивность, а вне прямых стоят нули.
+			\item Цель: по зашумлённому изображению выделить прямые линии и оценить их параметры.
+		\end{itemize}
+	\end{block}
+\end{frame}
+
+\begin{frame}{Пример зашумлённого изображения}
+	\begin{figure}
+		\centering
+		\includegraphics[width=0.7\textwidth]{images/Noisy_pic.png}
+		\refstepcounter{figure}
+
+		\vspace{0.15cm}
+		{\footnotesize
+		\centering
+		\parbox{0.9\linewidth}{\centering \figurename~\thefigure. Зашумлённое изображение размера 100 на 100 с прямой $y=x$ и $\sigma=0.2$}
+		\par}
+	\end{figure}
+\end{frame}
+
+\begin{frame}{Преобразование Хафа и предобработка}
+	\begin{itemize}
+		\item Существует преобразование Хафа, которое решает задачу оценки параметров прямых на изображении.
+		\item На практике преобразование Хафа обычно применяется после некоторой предобработки изображения.
+		\item В этой работе преобразование Хафа используется как этап финальной оценки параметров после шумоподавления.
+	\end{itemize}
+
+	\vspace{0.25cm}
+	\begin{block}{Почему возникает этап предобработки}
+		\begin{itemize}
+			\item Преобразование Хафа ищет максимумы в аккумуляторном массиве, который будет формально определен далее.
+			\item Шум порождает ложные активные точки и, следовательно, ложные максимумы.
+			\item Поэтому перед преобразованием Хафа изображение сначала подвергают шумоподавлению.
+		\end{itemize}
+	\end{block}
+\end{frame}
+
+\begin{frame}{Методы шумоподавления перед преобразованием Хафа}
+	\small
+	\begin{enumerate}
+		\item Рассматриваются четыре стандартных варианта предобработки: \texttt{BM3D}, медианный фильтр как локальная ранговая обработка, фильтр Винера как локальная линейная оценка и \texttt{Quantile 0.9} в качестве самого простого алгоритма для сравнения.
+		\item Ограничение квантильного фильтра: если одна прямая имеет сильный сигнал, а другая слабый сигнал, сравнимый с шумом, глобальный квантильный порог может сохранить в основном сильную прямую и потерять слабую.
+	\end{enumerate}
+
+	\vspace{0.2cm}
+	Наряду с ними далее определяется алгоритм \texttt{CSSA ROW-ROW}, основанный на преобразовании Фурье и комплексном SSA.
+\end{frame}
+
+\begin{frame}{Цель работы и план доклада}
+	\small
+	\begin{block}{Цель работы}
+		Сравнить алгоритмы предобработки изображения по точности последующего оценивания параметров прямой с помощью преобразования Хафа.
+	\end{block}
+
+	\vspace{0.1cm}
+	\textbf{План доклада:}
+	\begin{enumerate}
+		\item Описать преобразование Хафа и роль предобработки изображения.
+		\item Определить алгоритм \texttt{CSSA ROW-ROW}.
+		\item Рассмотреть свойства алгоритма на основе CSSA: одноранговую аппроксимацию, влияние шума.
+		\item Сравнить методы по ошибкам оценивания $\rho$ и $\theta$ для разных конфигураций прямой.
+	\end{enumerate}
+\end{frame}
+
+\section{Преобразование Хафа}
+
+\begin{frame}{Преобразование Хафа: замечание о параметризации прямой}
+	\small
+	\begin{itemize}
+		\item Часто прямую на плоскости задают в виде графика линейной функции $y = ax + b$.
+		\item Для вертикальной прямой $x = c$ коэффициент наклона $a$ не является конечным.
+		\item Поэтому в преобразовании Хафа используют перепараметризацию
+		\[
+		\rho = x \cos \theta + y \sin \theta,
+		\]
+		где $\rho\in \mathbb{R}$ и $\theta\in[0,\pi]$.
+		\item В рассматриваемой задаче изображение задается на дискретной матрице, поэтому считаем $\rho\in [-\rho_{\max}, \rho_{\max}]$, $\rho_{\max}$ можно непосредственно вычислить по матрице.
+		
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Преобразование Хафа: параметризация $(\rho,\theta)$}
+	\begin{figure}
+		\centering
+		\includegraphics[height=0.58\textheight,keepaspectratio]{images/rt_params.png}
+		\caption{Параметризация прямой через $\rho$ и $\theta$}
+	\end{figure}
+\end{frame}
+
+\begin{frame}{Преобразование Хафа: идея}
+	\begin{itemize}
+		\item После введения параметризации $(\rho,\theta)$ задачу обнаружения прямой можно перенести в пространство параметров.
+		\item Для фиксированной точки изображения $(x_0,y_0)$ множество параметров всех прямых, проходящих через нее, задается соотношением
+		\[
+		\rho(\theta) = x_0 \cos \theta + y_0 \sin \theta,
+		\]
+		то есть одной кривой в параметрическом пространстве.
+		\item Если точки $(x_1,y_1),\dots,(x_k,y_k)$ лежат на одной прямой, то соответствующие кривые проходят через общую точку $(\rho^\ast,\theta^\ast)$.
+		\item Эта общая точка задаёт параметры исходной прямой.
+		\item Поэтому задача выделения прямых сводится к поиску точек пересечения таких кривых, а после дискретизации --- к поиску максимумов в аккумуляторном массиве.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Аккумуляторный массив}
+	\small
+	\begin{block}{Определение}
+		{\scriptsize
+		Пусть $E$ --- множество активных точек изображения,
+		$h_\rho>0$ и $h_\theta>0$ --- шаги дискретизации по параметрам $\rho$ и $\theta$.
+		Сетка в пространстве параметров задаётся как
+		\[
+		\rho_i = -\rho_{\max} + i h_\rho,\qquad
+		\theta_j = j h_\theta.
+		\]
+		Тогда аккумуляторный массив $A=(A_{ij})$ определяется формулой
+		\[
+		A_{ij} =
+		\sum_{(x,y)\in E}
+		\mathbf{1}\left\{
+		\left| \rho_i - \bigl(x\cos\theta_j + y\sin\theta_j\bigr) \right|
+		\le \frac{h_\rho}{2}
+		\right\}.
+		\]
+		}
+	\end{block}
+
+	\begin{itemize}
+		\item Параметры $h_\rho$ и $h_\theta$ задают точность дискретизации пространства параметров.
+		\item Для каждой активной точки $(x,y)$ и каждого значения $\theta_j$ вычисляется $\rho = x\cos\theta_j + y\sin\theta_j$, после чего увеличивается соответствующая ячейка аккумулятора.
+		\item Поэтому локальные максимумы аккумуляторного массива интерпретируются как оценки параметров прямых.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Пример аккумуляторного массива}
+	\begin{columns}[c]
+		\begin{column}{0.32\textwidth}
+			\centering
+			\scriptsize Восстановленные прямые
+			\par\vspace{0.08cm}
+			\includegraphics[width=\textwidth,height=0.7\textheight,keepaspectratio]{images/accumulator_recovered_lines.pdf}
+		\end{column}
+		\begin{column}{0.65\textwidth}
+			\centering
+			\scriptsize Аккумуляторный массив
+			\par\vspace{0.08cm}
+			\includegraphics[width=\textwidth,height=0.5\textheight,keepaspectratio,trim=125 15 125 15,clip]{images/ACCUMULATOR_pic_contrast.png}
+		\end{column}
+	\end{columns}
+
+	\vspace{0.1cm}
+	\centering
+	\scriptsize
+	Аккумуляторный массив и прямые, восстановленные по нему; используется сетка $(\Delta\rho,\Delta\theta)=(1,0.01)$.
+\end{frame}
+
+%\begin{frame}{Поиск максимумов и NMS}
+%	\begin{itemize}
+%		\item После заполнения аккумулятора нужно найти его локальные максимумы.
+%		\item При шуме рядом с истинным максимумом часто возникает несколько близких больших значений.
+%		\item Поэтому используется локальное подавление немаксимумов (NMS).
+%		\item NMS оставляет только наиболее сильные пики и делает оценку параметров устойчивее.
+%	\end{itemize}
+%\end{frame}
+%
+%\begin{frame}{Аккумулятор после NMS}
+%	\begin{figure}
+%		\centering
+%		\includegraphics[width=0.82\textwidth]{images/ACCUM_NMS.png}
+%		\caption{Аккумуляторный массив после применения NMS}
+%	\end{figure}
+%\end{frame}
+
+\begin{frame}[shrink=5]{Преобразование Хафа: этапы работы}
+	\textbf{Входные данные:} изображение после шумоподавления размера $m \times n$, шаги дискретизации $h_{\rho}, h_{\theta}$, количество прямых $k$.
+
+	\vspace{0.1cm}
+	\textbf{Выходные данные:} оценки параметров найденных прямых $(\hat{\rho},\hat{\theta})$.
+
+	\vspace{0.2cm}
+	\begin{enumerate}
+		\item Дискретизация пространства $(\rho,\theta)$ с шагами $h_\rho$ и $h_\theta$ и инициализация аккумулятора.
+		\item Для каждой активной точки $(x,y)$ строится кривая $\rho(\theta)$ в пространстве параметров.
+		\item Значения соответствующих ячеек аккумулятора увеличиваются на $1$.
+		\item По аккумулятору ищутся $k$ локальных максимума, после чего оцениваются параметры прямых.
+		\item По найденным $(\hat{\rho},\hat{\theta})$ восстанавливаются прямые на изображении.
+	\end{enumerate}
+
+	\vspace{0.2cm}
+	\begin{block}{Замечание}
+		Качество предобработки напрямую влияет на точность финальных оценок $\rho$ и $\theta$.
+	\end{block}
+\end{frame}
+
+\begin{frame}{Активное множество после предобработки}
+	\small
+	После предобработки важна не только величина остаточного шума, но и множество положительных элементов восстановленной матрицы.
+	Множество активных пикселей задается как
+	\[
+	E = \{(i,j): \widehat{M}_{ij} > 0\}.
+	\]
+
+	\begin{block}{Следствие}
+		Даже слабые положительные остатки после шумоподавления участвуют влияют на результат, меняя локальный максимум аккумуляторного массива.
+	\end{block}
+
+	\begin{itemize}
+		\item Поэтому слабая визуальная выраженность шума не гарантирует малую ошибку по $(\rho,\theta)$.
+	\end{itemize}
+\end{frame}
+
+\section{Алгоритмы на основе CSSA}
+
+\begin{frame}{Стандартные методы: Median и Wiener}
+	\scriptsize
+	\begin{block}{Median}
+		Пусть $W_{ij}^{(k)}$ --- квадратное окно размера $k\times k$ с центром в точке $(i,j)$ (стандартно $k=3$):
+		\[
+		\widehat M_{ij} =
+		\operatorname{med}\{M_{pq}:(p,q)\in W_{ij}^{(k)}\}.
+		\]
+		Это обработка, подавляющая одиночные выбросы.
+	\end{block}
+
+	\begin{block}{Wiener}
+		Пусть $W_{ij}^{(k)}$ --- квадратное окно размера $k\times k$ (стандартно $k=5$).
+		По нему вычисляются локальные среднее $\mu_{ij}$ и дисперсия $\nu_{ij}$:
+		\[
+		\widehat M_{ij} =
+		\mu_{ij}+\lambda_{ij}(M_{ij}-\mu_{ij}),\qquad
+		\lambda_{ij}=
+		\frac{\max(\nu_{ij}-\sigma_n^2,0)}{\max(\nu_{ij},\varepsilon)},
+		\]
+		где $\sigma_n^2$ --- оценка дисперсии шума, $\varepsilon>0$ предотвращает деление на нуль.
+	\end{block}
+\end{frame}
+
+\begin{frame}{Стандартные методы: BM3D и Quantile 0.9}
+	\scriptsize
+	\begin{block}{BM3D}
+		Для опорного фрагмента $P_s$ в области поиска выбираются фрагменты $P_t$, близкие к нему по заданной мере сходства(например, MSE).
+		Найденные фрагменты группируют, после чего применяется совместная фильтрация(например, Винеровским фильтром).
+		После обратного преобразования перекрывающиеся оценки пикселей объединяются взвешенным усреднением.
+	\end{block}
+
+	\begin{block}{Quantile 0.9}
+		Метод задает глобальный порог по 0.9-квантилю яркостей:
+		\[
+		\widehat{M}_{ij}=M_{ij}\mathbf{1}\{M_{ij}\ge Q_{0.9}(\mathbf{M})\}.
+		\]
+		Следовательно, ровно 90 процентов всех пикселей матрицы становится равным 0.
+	\end{block}
+\end{frame}
+
+\begin{frame}{CSSA: вложение комплексного ряда}
+	\small
+	\begin{itemize}
+		\item Рассматривается комплексный временной ряд
+		\[
+		z = (z_1,\dots,z_N).
+		\]
+		\item Цель метода CSSA --- представить ряд как сумму компоненты сигнала $\hat{\mathbf{S}} $ и шумовой компоненты $\hat{\mathbf{R}}$.
+		\item Выбирается длина окна $L$, после чего задаётся $K = N - L + 1$.
+		\item Оператор вложения переводит ряд в траекторную матрицу
+		\[
+		\mathbf{X} = \mathcal{T}_L(z) =
+		\begin{pmatrix}
+			z_1 & z_2 & \dots & z_K \\
+			z_2 & z_3 & \dots & z_{K+1} \\
+			\vdots & \vdots & \ddots & \vdots \\
+			z_L & z_{L+1} & \dots & z_N
+		\end{pmatrix}.
+		\]
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{CSSA: SVD, группировка и восстановление}
+	\small
+	\begin{itemize}
+		\item Для траекторной матрицы строится сингулярное разложение
+		$\mathbf{X} = \sum_{i=1}^{d} \sqrt{\lambda_i}\,\mathbf{U}_i \mathbf{V}_i^{*}$.
+		\item Компоненты, соответствующие сигналу, объединяются в группу $I$:
+		$\mathbf{X}_{I} = \sum_{i\in I} \sqrt{\lambda_i}\,\mathbf{U}_i \mathbf{V}_i^{*}$.
+		\item После диагонального усреднения получают оценку комплексного ряда
+		$\widehat{z} = \mathcal{T}_L^{-1}\circ\mathcal{H}(\mathbf{X}_{I})$.
+		\item Таким образом CSSA выступает как метод шумоподавления комплексного временного ряда.
+	\end{itemize}
+
+	\begin{block}{Применение в контексте шумоподавления изображений}
+		Далее эта процедура используется внутри алгоритма \textbf{CSSA ROW-ROW}.
+	\end{block}
+\end{frame}
+
+\begin{frame}{CSSA ROW-ROW: схема алгоритма}
+	\small
+	\textbf{Входные данные:} матрица изображения $\mathbf{M}\in\mathbb{R}^{m\times n}$
+	и число сохраняемых компонент $k$.
+
+	\textbf{Выходные данные:} оценка изображения $\widehat{\mathbf{S}}\in\mathbb{R}^{m\times n}$.
+
+	\vspace{0.2cm}
+	\textbf{Схема работы:}
+	\begin{enumerate}
+		\item Для каждой строки $\mathbf{m}^{(p)}$ вычисляется ДПФ:
+		$\boldsymbol{\xi}^{(p)} = \mathcal{F}\bigl(\mathbf{m}^{(p)}\bigr)$, $p=1,\dots,m$.
+		\item К каждому комплексному ряду $\boldsymbol{\xi}^{(p)}$ применяется CSSA.
+		\item В разложении сохраняются $k$ компонент, после чего строится оценка ряда $\widehat{\boldsymbol{\xi}}^{(p)}$.
+		\item По каждой строке выполняется обратное ПФ:
+		$\widehat{\mathbf{s}}^{(p)} = \operatorname{Re}\!\Bigl(\mathcal{F}^{-1}\bigl(\widehat{\boldsymbol{\xi}}^{(p)}\bigr)\Bigr)$.
+		\item Из строк $\widehat{\mathbf{s}}^{(1)},\dots,\widehat{\mathbf{s}}^{(m)}$ составляется матрица $\widehat{\mathbf{S}}$.
+	\end{enumerate}
+\end{frame}
+
+\begin{frame}[shrink=5]{Почему для одной точки ожидается ранг 1}
+	\small
+	Пусть в строке длины $N$ сигнал задается единичным ортом:
+	\[
+	x = e_j.
+	\]
+	После дискретного преобразования Фурье получаем комплексную экспоненту:
+	\[
+	\mathcal{F}(e_j)_k = \exp(i\omega_j(k-1)).
+	\]
+
+	\begin{block}{Связь с CSSA}
+		Траекторная матрица такой экспоненты представляется как внешнее произведение:
+		\[
+		X_{\ell,k} = \exp(i\omega_j(\ell+k-2)) = u_{\ell}v_k,
+		\]
+		где
+		\[
+		u_{\ell}=\exp(i\omega_j(\ell-1)),\qquad
+		v_k=\exp(i\omega_j(k-1)).
+		\]
+		Следовательно, $\mathbf{X}=uv^{T}$, причем $u\neq0$ и $v\neq0$, поэтому $\operatorname{rank}X=1$.
+	\end{block}
+
+	Поэтому чистая строка с одним пикселем сигнала после ДПФ является рядом комплексного ранга $1$ в смысле CSSA.
+\end{frame}
+
+\begin{frame}{Мотивировка алгоритма CSSA ROW-ROW}
+	\small
+	\begin{itemize}
+		\item Для строки с одной яркой точкой и шумом имеем
+		$\mathbf{x} = c\,\mathbf{e}_j + \boldsymbol{\varepsilon}$,
+		где $\mathbf{e}_j$ --- базисный вектор, а $\boldsymbol{\varepsilon}$ --- гауссов шум.
+		\item После преобразования Фурье
+		$\mathcal{F}(\mathbf{x}) = c\,\boldsymbol{\omega}_j + \widetilde{\boldsymbol{\varepsilon}}$,
+		где $\boldsymbol{\omega}_j=\mathcal{F}(\mathbf{e}_j)$ --- ряд из комплексных экспонент, имеющий ранг $1$, $\widetilde{\boldsymbol{\varepsilon}}$ --- гауссовский вектор в силу линейности преобразования Фурье.
+		\item В отсутствие шума траекторная матрица имеет ровно одну ненулевую сингулярную компоненту.
+		\item При наличии шума лучшая одноранговая аппроксимация в норме Фробениуса задается первой компонентой SVD.
+		\item Поэтому в \texttt{CSSA ROW-ROW} при одной прямой естественно сохранять одну компоненту в каждой строке.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Гауссовский шум после ДПФ}
+	\scriptsize
+	Пусть $\boldsymbol{\varepsilon}\sim \mathcal N(0,\sigma^2 I_N)$, а $F$ --- матрица ДПФ без дополнительной нормировки. Тогда
+	\[
+		\widetilde{\boldsymbol{\varepsilon}} = F\boldsymbol{\varepsilon}.
+	\]
+
+	\vspace{-0.2cm}
+	\begin{columns}[T]
+		\begin{column}{0.48\textwidth}
+			\textbf{Почему шум остается гауссовским}
+			\[
+				a^{*}\widetilde{\boldsymbol{\varepsilon}}
+				= a^{*}F\boldsymbol{\varepsilon}
+				= (F^{*}a)^{*}\boldsymbol{\varepsilon}.
+			\]
+			Это линейная комбинация координат гауссовского вектора, поэтому она гауссовская. Следовательно, $\widetilde{\boldsymbol{\varepsilon}}$ --- комплексный гауссовский вектор.
+		\end{column}
+		\begin{column}{0.48\textwidth}
+			\textbf{Как меняется ковариация}
+			\[
+				F_{lm}=\exp\!\left(\frac{2\pi i}{N}(l-1)(m-1)\right),
+			\]
+			\[
+				(FF^{*})_{lm}=
+				\sum_{k=0}^{N-1}
+				\exp\!\left(\frac{2\pi i}{N}k(l-m)\right).
+			\]
+			\[
+				(FF^{*})_{lm}=N,\quad l=m,
+			\]
+			\vspace{-0.35cm}
+			\[
+				(FF^{*})_{lm}=0,\quad l\ne m.
+			\]
+		\end{column}
+	\end{columns}
+
+	\vspace{0.05cm}
+	Следовательно,
+	\[
+		\operatorname{Cov}(F\boldsymbol{\varepsilon})=\sigma^2 FF^{*}=N\sigma^2 I_N.
+	\]
+\end{frame}
+
+\begin{frame}{Что меняет шум в CSSA-разложении}
+	\small
+	\begin{columns}[T]
+		\begin{column}{0.49\textwidth}
+			\centering
+			\includegraphics[width=\textwidth,height=0.58\textheight,keepaspectratio]{../VKR_TEXT/images/chapter2/singular-values-02.pdf}
+
+			{\scriptsize $\sigma=0.2$}
+		\end{column}
+		\begin{column}{0.49\textwidth}
+			\centering
+			\includegraphics[width=\textwidth,height=0.58\textheight,keepaspectratio]{../VKR_TEXT/images/chapter2/singular-values-005.pdf}
+
+			{\scriptsize $\sigma=0.05$}
+		\end{column}
+	\end{columns}
+
+	\vspace{0.05cm}
+	\begin{itemize}
+		\item Без шума траекторная матрица сигнала имеет ранг $1$.
+		\item Шум делает ненулевыми последующие сингулярные значения.
+		\item При меньшем шуме первая компонента доминирует сильнее, поэтому одноранговая реконструкция устойчивее.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Ограничения одноранговой построчной модели}
+	\small
+	Для $p$-й строки пусть $q_p$ --- число пикселей сигнала. После ДПФ:
+	\[
+	\mathcal F(\mathbf{x}^{(p)}) =
+	\sum_{r=1}^{q_p} c_r\boldsymbol{\omega}_{j_r}
+	+ \widetilde{\boldsymbol{\varepsilon}}^{(p)}.
+	\]
+
+	\vspace{-0.1cm}
+	\begin{itemize}
+		\item При $q_p=1$ часть сигнала имеет комплексный ранг $1$.
+		\item При $q_p=0$ первая компонента CSSA выбирается по шуму.
+		\item При $q_p\ge2$ часть сигнала уже не обязана быть одноранговой, поэтому одноранговая аппроксимация добавляет дополнительный источник ошибки.
+		\item Смещение максимума и растекание оценки могут возникать уже при $q_p=1$ из-за шумовой компоненты и возмущения первой SVD-компоненты.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Смещение максимума и растекание}
+	\centering
+	\includegraphics[width=\textwidth,height=0.72\textheight,keepaspectratio]{../VKR_TEXT/images/chapter2/row_row_component_examples.pdf}
+
+	\vspace{0.1cm}
+	\scriptsize
+	\begin{itemize}
+		\item максимум восстановленной строки может оказаться не в истинной точке сигнала;
+		\item максимум может быть правильным, но вокруг него остаются слабые положительные следы.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{От реконструкции к входу преобразования Хафа}
+	\only<1>{
+		\begin{figure}
+			\centering
+			\includegraphics[width=0.76\textwidth]{images/demo-cssa-row-row-1.png}
+			\caption{\parbox[t]{0.88\linewidth}{\centering Шумоподавление методом CSSA ROW-ROW, $n=m=100$, $\sigma=0.2$, прямая $y=2x-1$}}
+		\end{figure}
+	}
+	\only<2>{
+		\begin{figure}
+			\centering
+			\includegraphics[height=0.46\textheight,keepaspectratio]{../VKR_TEXT/images/chapter2/row_row_binary_hough_input.pdf}
+			\caption{Бинаризованный результат \texttt{CSSA ROW-ROW}: фактический вход преобразования Хафа}
+		\end{figure}
+
+		\vspace{-0.35cm}
+		\scriptsize
+		\begin{itemize}
+			\setlength{\itemsep}{0pt}
+			\item На восстановленном изображении шум может быть визуально подавлен.
+			\item После бинаризации все элементы $\widehat M_{ij}>0$ попадают в активное множество, поэтому для преобразования Хафа важно количество полезных элементов этого множества.
+		\end{itemize}
+	}
+	\only<3>{
+		\begin{figure}
+			\centering
+			\includegraphics[height=0.50\textheight,keepaspectratio]{images/row_row_threshold_01_hough_input.pdf}
+			\caption{Вход преобразования Хафа после дополнительного порога $\widehat M_{ij}\ge 0.1$}
+		\end{figure}
+
+		\vspace{-0.25cm}
+		\scriptsize
+		\begin{itemize}
+			\setlength{\itemsep}{0pt}
+			\item Порог удаляет слабые положительные остатки, которые иначе участвуют в голосовании.
+			\item Такой шаг нужно задавать не визуально, а через оценку уровня шумовой части после обработки.
+		\end{itemize}
+	}
+\end{frame}
+
+\begin{frame}{Статистический выбор порога}
+	\scriptsize
+	Для одной строки после ДПФ имеем
+	\[
+		z = Fx = s+\eta,
+		\qquad
+		\eta=F\varepsilon,
+		\qquad
+		\operatorname{Cov}(\eta)=N\sigma^2 I_N.
+	\]
+	После \texttt{CSSA ROW-ROW} первая компонента используется как оценка части сигнала:
+	\[
+		\widehat s,
+		\qquad
+		r=z-\widehat s.
+	\]
+	Остаток $r$ переводится обратно в исходную область:
+	\[
+		\widehat\varepsilon=F^{-1}r=\frac{1}{N}F^{*}r.
+	\]
+	Если $r$ содержит только шумовую часть, то
+	\[
+		\operatorname{Cov}(\widehat\varepsilon)
+		=
+		\frac{1}{N^2}F^{*}(N\sigma^2 I_N)F
+		=
+		\sigma^2 I_N,
+	\]
+	поскольку $F^{*}F=N I_N$.
+
+	\vspace{-0.15cm}
+	\begin{enumerate}
+		\item оценить уровень остаточного шума по $\widehat\varepsilon$, например через $\widehat\sigma=\operatorname{sd}(\widehat\varepsilon)$;
+		\item выбрать порог $\tau$ как высокий квантиль распределения $|\widehat\varepsilon|$;
+		\item занулить элементы $|\widehat M_{ij}|\le\tau$ перед преобразованием Хафа для всех методов предобработки.
+	\end{enumerate}
+\end{frame}
+
+\section{Численное сравнение}
+
+\begin{frame}{Схема численного эксперимента}
+	\begin{itemize}
+		\item Рассматривается изображение размера $100\times100$ с одной прямой.
+		\item Уровни шума: $\sigma = 0.2$ и $\sigma = 0.05$.
+		\item Сравниваются методы шумоподавления \texttt{CSSA ROW-ROW}, \texttt{BM3D}, \texttt{Median}, \texttt{Wiener}, \texttt{Quantile 0.9}.
+		\item После шумоподавления ко всем изображениям применяется одно и то же преобразование Хафа.
+		\item Используются 4 конфигурации прямой и по 100 повторов на каждый метод.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Конфигурации прямых в эксперименте}
+	\begin{figure}
+		\centering
+		\includegraphics[width=0.78\textwidth]{images/configuration-preview-1.png}
+		\caption{Конфигурации прямых, использованные в численном эксперименте}
+	\end{figure}
+\end{frame}
+
+\begin{frame}{Метрики ошибки}
+	\footnotesize
+	\begin{itemize}
+		\setlength{\itemsep}{0.25em}
+		\item Параметры прямой оцениваются покомпонентно: отдельно по $\rho$ и отдельно по $\theta$.
+		\[
+		\mathrm{MSE}_{\rho} = \frac{1}{N}\sum_{i=1}^{N}(\rho_i-\hat{\rho}_i)^2,
+		\qquad
+		\mathrm{MSE}_{\theta} = \frac{1}{N}\sum_{i=1}^{N}(\theta_i-\hat{\theta}_i)^2.
+		\]
+		\item Дополнительно по оцененным параметрам $(\hat\rho_i,\hat\theta_i)$ на пустой матрице восстанавливается прямая $\widehat L_i$.
+		\item Если истинная прямая задается как $y=ax+b$, то для одного запуска используется среднее расстояние пикселей восстановленной прямой до истинной:
+		\[
+			D_i=\frac{1}{|\widehat L_i|}\sum_{(x,y)\in \widehat L_i}
+			\frac{|ax-y+b|}{\sqrt{a^2+1}}.
+		\]
+		\item В таблицах ниже рассматриваются средние и медианные значения этих ошибок по 100 повторам.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Шум $\sigma=0.05$: влияние сетки}
+	\scriptsize
+	\centering
+	\textbf{Средняя ошибка по $\rho$ при разных шагах $(\Delta\rho;\Delta\theta)$}
+	\par\vspace{0.06cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{0.82\textwidth}{!}{\input{tables/grid_step_mean_rho_mse_sigma_005.tex}}
+	}
+
+	\vspace{0.18cm}
+	\textbf{Средняя ошибка по $\theta$ при разных шагах $(\Delta\rho;\Delta\theta)$}
+	\par\vspace{0.06cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{0.82\textwidth}{!}{\input{tables/grid_step_mean_theta_mse_sigma_005.tex}}
+	}
+
+	\vspace{0.12cm}
+	\begin{itemize}
+		\setlength{\itemsep}{0pt}
+		\item Расчет выполнен при $\sigma=0.05$ по $25$ повторам на конфигурацию.
+		\item Не все методы улучшают свои показатели при уменьшении шума.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Порог $0.1$: средние ошибки по параметрам}
+	\scriptsize
+	\centering
+	\textbf{Средняя ошибка по $\rho$ после зануления элементов $\widehat M_{ij}<0.1$}
+	\par\vspace{0.06cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/threshold_01_mean_rho_mse_sigma_020.tex}}
+	}
+
+	\vspace{0.18cm}
+	\textbf{Средняя ошибка по $\theta$ после зануления элементов $\widehat M_{ij}<0.1$}
+	\par\vspace{0.06cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/threshold_01_mean_theta_mse_sigma_020.tex}}
+	}
+
+	\vspace{0.12cm}
+	\begin{itemize}
+		\setlength{\itemsep}{0pt}
+		\item Расчет выполнен при $\sigma=0.2$ по $10$ повторам на конфигурацию.
+		\item Порог применяется перед преобразованием Хафа ко всем методам предобработки.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Шум $\sigma=0.2$: средние ошибки по $\rho$}
+	\scriptsize
+	\centering
+	\textbf{Без шума и обработки, сетка $(\Delta\rho;\Delta\theta)=(1;0.01)$}
+	\par\vspace{0.05cm}
+	{
+	\renewcommand{\arraystretch}{0.95}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/ideal_default_grid_rho_mse.tex}}
+	}
+
+	\vspace{0.12cm}
+	\textbf{Средняя ошибка при $\sigma=0.2$}
+	\par\vspace{0.05cm}
+	{
+	\renewcommand{\arraystretch}{1.05}
+	\setlength{\tabcolsep}{2.5pt}
+	\resizebox{\textwidth}{!}{
+	\begin{tabular}{|l|r|r|r|r|}
+		\hline
+		Метод & \shortstack{Положительная\\диагональ} & \shortstack{Отрицательная\\диагональ} & \shortstack{Крутая\\прямая} & \shortstack{Крутая\\смещенная} \\
+		\hline
+		CSSA ROW-ROW & $\textbf{0}$ & $0.2058$ & $1829.9237$ & $\textbf{0.0124}$ \\
+		Median & $\textbf{0}$ & $0.2140$ & $101.9407$ & $65.9665$ \\
+		Wiener & $\textbf{0}$ & $5100.5000$ & $\textbf{0.2000}$ & $320.0000$ \\
+		BM3D & $2.3300$ & $74.4323$ & $621.9409$ & $70.0880$ \\
+		Quantile 0.9 & $\textbf{0}$ & $\textbf{0.1745}$ & $\textbf{0.2000}$ & $\textbf{0.0124}$ \\
+		\hline
+	\end{tabular}}
+	}
+
+	\begin{block}{Вывод}
+		\scriptsize
+		 Ошибка \texttt{CSSA ROW-ROW} в основном вызвана конфигурацией ``крутая прямая''.
+	\end{block}
+\end{frame}
+
+\begin{frame}{Шум $\sigma=0.2$: средние ошибки по $\theta$}
+	\scriptsize
+	\centering
+	\textbf{Без шума и обработки, сетка $(\Delta\rho;\Delta\theta)=(1;0.01)$}
+	\par\vspace{0.05cm}
+	{
+	\renewcommand{\arraystretch}{0.95}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/ideal_default_grid_theta_mse.tex}}
+	}
+
+	\vspace{0.12cm}
+	\textbf{Средняя ошибка при $\sigma=0.2$}
+	\par\vspace{0.05cm}
+	{
+	\renewcommand{\arraystretch}{1.05}
+	\setlength{\tabcolsep}{2.5pt}
+	\resizebox{\textwidth}{!}{
+	\begin{tabular}{|l|r|r|r|r|}
+		\hline
+		Метод & \shortstack{Положительная\\диагональ} & \shortstack{Отрицательная\\диагональ} & \shortstack{Крутая\\прямая} & \shortstack{Крутая\\смещенная} \\
+		\hline
+		CSSA ROW-ROW & $\textbf{0.000014}$ & $0.000046$ & $2.205234$ & $\textbf{0.000004}$ \\
+		Median & $\textbf{0.000014}$ & $0.000032$ & $0.036016$ & $0.030450$ \\
+		Wiener & $\textbf{0.000014}$ & $2.455460$ & $0.101089$ & $0.101089$ \\
+		BM3D & $0.000064$ & $0.037483$ & $0.386263$ & $0.252102$ \\
+		Quantile 0.9 & $\textbf{0.000014}$ & $\textbf{0.000023}$ & $\textbf{0.000063}$ & $\textbf{0.000004}$ \\
+		\hline
+	\end{tabular}}
+	}
+
+	\begin{block}{Вывод}
+		\scriptsize
+		Для \texttt{CSSA ROW-ROW} нестабильность по $\theta$ также сосредоточена в конфигурации ``крутая прямая''.
+	\end{block}
+\end{frame}
+
+\begin{frame}{Частотный профиль ошибки: крутая прямая}
+	\begin{columns}[T]
+		\begin{column}{0.48\textwidth}
+			\tiny
+			\centering
+			\textbf{Первые строки сигнала}
+			\par\vspace{0.06cm}
+			\setlength{\tabcolsep}{1.4pt}
+			\renewcommand{\arraystretch}{0.88}
+			\resizebox{0.78\textwidth}{!}{\input{tables/steep_full_first_rows_frequency.tex}}
+		\end{column}
+		\begin{column}{0.50\textwidth}
+			\centering
+			\includegraphics[width=\textwidth,height=0.7\textheight,keepaspectratio]{images/steep_full_frequency_localization.pdf}
+		\end{column}
+	\end{columns}
+
+	\vspace{0.05cm}
+	\scriptsize
+	\begin{itemize}
+		\setlength{\itemsep}{0pt}
+		\item $j$ --- индекс пикселя исходного сигнала в строке, $\omega_j=-2\pi(j-1)/100$.
+		\item На низких частотах ошибка локализации максимума заметно выше; ближе к середине частотного диапазона она уменьшается.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Шум $\sigma=0.05$: средние ошибки по $\rho$}
+	\small
+	\centering
+	{
+	\renewcommand{\arraystretch}{1.35}
+	\setlength{\tabcolsep}{4pt}
+	\resizebox{\textwidth}{!}{
+	\begin{tabular}{|l|r|r|r|r|}
+		\hline
+		Метод & \shortstack{Положительная\\диагональ} & \shortstack{Отрицательная\\диагональ} & \shortstack{Крутая\\прямая} & \shortstack{Крутая\\смещенная} \\
+		\hline
+		CSSA ROW-ROW & $\textbf{0}$ & $0.2074$ & $0.2180$ & $\textbf{0.0124}$ \\
+		Median & $\textbf{0}$ & $0.2222$ & $0.5392$ & $1.9490$ \\
+		Wiener & $\textbf{0}$ & $5100.5000$ & $\textbf{0.2000}$ & $319.3245$ \\
+		BM3D & $49.7600$ & $49.5619$ & $264.0656$ & $38.0161$ \\
+		Quantile 0.9 & $\textbf{0}$ & $\textbf{0.1745}$ & $\textbf{0.2000}$ & $\textbf{0.0124}$ \\
+		\hline
+	\end{tabular}}
+	}
+
+	\begin{block}{Отличие от $\sigma=0.2$}
+		\scriptsize
+		На конфигурации ``крутая прямая'' ошибка \texttt{CSSA ROW-ROW} уменьшается с $1829.9237$ до $0.2180$.
+	\end{block}
+\end{frame}
+
+\begin{frame}{Шум $\sigma=0.05$: средние ошибки по $\theta$}
+	\small
+	\centering
+	{
+	\renewcommand{\arraystretch}{1.35}
+	\setlength{\tabcolsep}{4pt}
+	\resizebox{\textwidth}{!}{
+	\begin{tabular}{|l|r|r|r|r|}
+		\hline
+		Метод & \shortstack{Положительная\\диагональ} & \shortstack{Отрицательная\\диагональ} & \shortstack{Крутая\\прямая} & \shortstack{Крутая\\смещенная} \\
+		\hline
+		CSSA ROW-ROW & $\textbf{0.000014}$ & $0.000060$ & $0.000080$ & $\textbf{0.000004}$ \\
+		Median & $\textbf{0.000014}$ & $0.000030$ & $0.002050$ & $0.079170$ \\
+		Wiener & $\textbf{0.000014}$ & $2.455460$ & $0.101089$ & $0.101089$ \\
+		BM3D & $0.032270$ & $0.024710$ & $0.183440$ & $0.025390$ \\
+		Quantile 0.9 & $\textbf{0.000014}$ & $\textbf{0.000020}$ & $\textbf{0.000060}$ & $\textbf{0.000004}$ \\
+		\hline
+	\end{tabular}}
+	}
+
+	\begin{block}{Отличие от $\sigma=0.2$}
+		\scriptsize
+		На конфигурации ``крутая прямая'' ошибка \texttt{CSSA ROW-ROW} уменьшается с $2.205234$ до $0.000080$.
+	\end{block}
+\end{frame}
+
+\begin{frame}{Геометрическая метрика: шум $\sigma=0.2$}
+	\scriptsize
+	\centering
+	\textbf{Среднее расстояние до истинной прямой без дополнительного порога}
+	\par\vspace{0.06cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/line_distance_mean_sigma_020.tex}}
+	}
+
+	\vspace{0.22cm}
+	\textbf{Среднее расстояние после зануления $\widehat M_{ij}<0.1$}
+	\par\vspace{0.06cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/threshold_01_mean_distance_sigma_020.tex}}
+	}
+\end{frame}
+
+\begin{frame}{Геометрическая метрика: шум $\sigma=0.05$}
+	\scriptsize
+	\centering
+	\textbf{Среднее расстояние до истинной прямой}
+	\par\vspace{0.06cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/line_distance_mean_sigma_005.tex}}
+	}
+
+	\vspace{0.22cm}
+	\textbf{Медиана расстояния до истинной прямой}
+	\par\vspace{0.06cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/line_distance_median_sigma_005.tex}}
+	}
+\end{frame}
+
+\begin{frame}{Итоги}
+	\begin{itemize}
+		\item Сравнение по конфигурациям показывает, что результаты не стоит агрегировать без разбора отдельных случаев.
+		\item При $\sigma=0.2$ основной сбой \texttt{CSSA ROW-ROW} возникает на конфигурации ``крутая прямая''.
+		\item При $\sigma=0.05$ этот сбой резко ослабевает, что указывает на существенную зависимость метода от уровня шума.
+		\item \texttt{Quantile 0.9} остается наиболее стабильным в данном эксперименте, но его преимущество связано с конкретной моделью: одна прямая и одинаковая интенсивность сигнала.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Список литературы}
+	\begin{thebibliography}{99}
+		\bibitem{book1} N.~Golyandina, V.~Nekrutkin, A.~Zhiglyavsky.
+		\textit{Analysis of Time Series Structure: SSA and Related Techniques}.
+		Chapman \& Hall/CRC, 2001.
+
+		\bibitem{hough} R.O.~Duda, P.E.~Hart.
+		\textit{Use of the Hough Transformation to Detect Lines and Curves in Pictures}.
+		Communications of the ACM, 15(1):11--15, 1972.
+
+		\bibitem{trickett} S.~R.~Trickett.
+		\textit{F-xy eigenimage noise suppression}.
+		Geophysics, 68(2):751--759, 2003.
+	\end{thebibliography}
+\end{frame}
+
+\end{document}

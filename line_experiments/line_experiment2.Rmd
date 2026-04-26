@@ -1,0 +1,1220 @@
+---
+title: "РЎСЂР°РІРЅРµРЅРёРµ CSSA row.row Рё col.row"
+author: "Alex"
+date: "2026-03-11"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+Р’ СЌС‚РѕРј РѕС‚С‡РµС‚Рµ `row.row` Рё `col.row` СЃСЂР°РІРЅРёРІР°СЋС‚СЃСЏ РІ РѕРґРЅРѕРј СЃРѕРіР»Р°СЃРѕРІР°РЅРЅРѕРј СЃС†РµРЅР°СЂРёРё.
+РћС‚С‡РµС‚ СЃРѕРґРµСЂР¶РёС‚:
+
+1. РЎС‚СЂРѕРіРёР№ Р±Р»РѕРє СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№ РґР»СЏ С‡РµС‚С‹СЂРµС… РєРѕРЅС„РёРіСѓСЂР°С†РёР№, РєРѕС‚РѕСЂС‹Рµ РїСЂРѕС‰Рµ РІСЃРµРіРѕ РѕР±РѕСЃРЅРѕРІР°С‚СЊ РґР»СЏ `row.row`.
+2. РСЃСЃР»РµРґРѕРІР°С‚РµР»СЊСЃРєРёР№ Р±Р»РѕРє СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№ РЅР° РІСЃРµС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС….
+3. РџР°СЂРЅС‹Рµ СЃС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёРµ С‚РµСЃС‚С‹ РґР»СЏ `MSE`, РѕС€РёР±РєРё РїРѕ `rho` Рё РѕС€РёР±РєРё РїРѕ `theta`.
+4. РћС‚РґРµР»СЊРЅС‹Р№ Р°РЅР°Р»РёР· РѕС€РёР±РєРё РїРѕ `theta`.
+5. РСЃСЃР»РµРґРѕРІР°С‚РµР»СЊСЃРєРёР№ Р±Р»РѕРє СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+
+## РќР°СЃС‚СЂРѕР№РєР°
+
+```{r setup, include=FALSE}
+# Р“Р»РѕР±Р°Р»СЊРЅС‹Рµ РїР°СЂР°РјРµС‚СЂС‹ С‡Р°РЅРєРѕРІ Рё РІРѕСЃРїСЂРѕРёР·РІРѕРґРёРјРѕСЃС‚СЊ.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+set.seed(1111)
+```
+
+```{r libraries}
+# РџРѕРґРєР»СЋС‡Р°РµРј РїР°РєРµС‚С‹ РёР· Р»РѕРєР°Р»СЊРЅРѕР№ Р±РёР±Р»РёРѕС‚РµРєРё РїСЂРѕРµРєС‚Р°, РµСЃР»Рё РѕРЅР° СЃСѓС‰РµСЃС‚РІСѓРµС‚,
+# Рё РїСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ РІСЃРµ РЅСѓР¶РЅС‹Рµ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РґРѕСЃС‚СѓРїРЅС‹.
+project_lib <- normalizePath("../.r-local-lib", winslash = "/", mustWork = FALSE)
+if (dir.exists(project_lib)) {
+  .libPaths(c(project_lib, .libPaths()))
+}
+
+required_pkgs <- c("dplyr", "ggplot2", "Rcpp", "Rssa", "gridExtra")
+missing_pkgs <- required_pkgs[
+  !vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_pkgs) > 0) {
+  stop("РћС‚СЃСѓС‚СЃС‚РІСѓСЋС‚ РїР°РєРµС‚С‹: ", paste(missing_pkgs, collapse = ", "))
+}
+
+# РЎРЅР°С‡Р°Р»Р° Р·Р°РіСЂСѓР¶Р°РµРј Rcpp, С‡С‚РѕР±С‹ sourceCpp РёСЃРїРѕР»СЊР·РѕРІР°Р» С‚Сѓ Р¶Рµ РІРµСЂСЃРёСЋ namespace,
+# РєРѕС‚РѕСЂСѓСЋ Р·Р°С‚РµРј СѓРІРёРґСЏС‚ Rssa Рё РµРµ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё.
+library(Rcpp)
+library(dplyr)
+library(ggplot2)
+
+# Р—Р°РіСЂСѓР¶Р°РµРј РєРѕРґ РїСЂРѕРµРєС‚Р°, РёСЃРїРѕР»СЊР·СѓРµРјС‹Р№ РїРѕ РІСЃРµРјСѓ РѕС‚С‡РµС‚Сѓ.
+source("../ssa-based methods/cssa-transform.r")
+source("../hough transform/hough_transform.r")
+```
+
+## РџР°СЂР°РјРµС‚СЂС‹ РћС‚С‡РµС‚Р°
+
+```{r report-parameters}
+# РЎРѕР±РёСЂР°РµРј РїР°СЂР°РјРµС‚СЂС‹ СЌРєСЃРїРµСЂРёРјРµРЅС‚Р° РІ РѕРґРЅРѕРј РјРµСЃС‚Рµ, С‡С‚РѕР±С‹ РёС… Р±С‹Р»Рѕ СѓРґРѕР±РЅРѕ РјРµРЅСЏС‚СЊ.
+single_sigma_noise <- 0.2
+single_n_repeats <- 2L
+
+multi_sigma_noise <- 0.2
+multi_n_repeats <- 2L
+
+
+methods_compare <- c("row.row", "col.row")
+
+# Р”Р»СЏ РІСЃРµР№ HT-С‡Р°СЃС‚Рё РёСЃРїРѕР»СЊР·СѓРµРј РѕРґРёРЅ Рё С‚РѕС‚ Р¶Рµ РґРµС‚РµРєС‚РѕСЂ.
+detector_q <- 0.001
+rho_step_ht <- 0.9
+theta_step_ht <- 0.01
+ht_nms_window <- 6L
+
+# Р Р°Р·РјРµСЂС‹ РІСЃРµС… СЃС†РµРЅ РІ СЌС‚РѕРј РѕС‚С‡РµС‚Рµ.
+default_n_row <- 100L
+default_n_col <- 100L
+
+# РўРµРѕСЂРµС‚РёС‡РµСЃРєРѕРµ Р·Р°РјРµС‡Р°РЅРёРµ:
+# Р”Р»СЏ СЃС‚СЂРѕРіРѕРіРѕ Р±Р»РѕРєР° СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№ РѕСЃС‚Р°РІР»СЏРµРј С‚РѕР»СЊРєРѕ РґРІР° РґРёР°РіРѕРЅР°Р»СЊРЅС‹С… Рё РґРІР° СЃР»СѓС‡Р°СЏ СЃ РєСЂСѓС‚С‹Рј РЅР°РєР»РѕРЅРѕРј.
+strict_scene_ids <- c(
+  "diag_pos_full",
+  "diag_neg_full",
+  "steep_full",
+  "steep_shifted"
+)
+```
+
+## РљРѕРЅС„РёРіСѓСЂР°С†РёРё РЎ РћРґРЅРѕР№ РџСЂСЏРјРѕР№
+
+```{r single-configurations}
+# РћРїРёСЃС‹РІР°РµРј РІСЃРµ РєРѕРЅС„РёРіСѓСЂР°С†РёРё СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№ РёР· РёСЃС…РѕРґРЅРѕРіРѕ РѕС‚С‡РµС‚Р°.
+single_configs <- data.frame(
+  scene_id = c(
+    "diag_pos_full",
+    "diag_neg_full",
+    "shallow_bottom",
+    "shallow_center",
+    "steep_full",
+    "steep_shifted",
+    "short_corner",
+    "horizontal",
+    "almost_horizontal"
+  ),
+  n_col = rep(default_n_col, 9),
+  n_row = rep(default_n_row, 9),
+  a = c(1, -1, 0.5, 0.5, 2, 2, 1, 0, 0.05),
+  b = c(0, 101, 0, 25, -1, -40, 70, 20, 30),
+  description = c(
+    "РџРѕР»РѕР¶РёС‚РµР»СЊРЅР°СЏ РїРѕР»РЅР°СЏ РґРёР°РіРѕРЅР°Р»СЊ",
+    "РћС‚СЂРёС†Р°С‚РµР»СЊРЅР°СЏ РїРѕР»РЅР°СЏ РґРёР°РіРѕРЅР°Р»СЊ",
+    "РџРѕР»РѕРіР°СЏ РїСЂСЏРјР°СЏ РѕС‚ РЅРёР¶РЅРµР№ РіСЂР°РЅРёС†С‹",
+    "РџРѕР»РѕРіР°СЏ С†РµРЅС‚СЂР°Р»СЊРЅР°СЏ РїСЂСЏРјР°СЏ",
+    "РљСЂСѓС‚Р°СЏ РїСЂСЏРјР°СЏ, РїСЂРѕС…РѕРґСЏС‰Р°СЏ С‡РµСЂРµР· Р±РѕР»СЊС€СѓСЋ С‡Р°СЃС‚СЊ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ",
+    "РЎРјРµС‰РµРЅРЅР°СЏ РєСЂСѓС‚Р°СЏ РїСЂСЏРјР°СЏ СЃ Р±РѕР»РµРµ РєРѕСЂРѕС‚РєРёРј РІРёРґРёРјС‹Рј СЃРµРіРјРµРЅС‚РѕРј",
+    "РљРѕСЂРѕС‚РєРёР№ СѓРіР»РѕРІРѕР№ СЃРµРіРјРµРЅС‚",
+    "Р“РѕСЂРёР·РѕРЅС‚Р°Р»СЊРЅР°СЏ РїСЂСЏРјР°СЏ",
+    "РџРѕС‡С‚Рё РіРѕСЂРёР·РѕРЅС‚Р°Р»СЊРЅР°СЏ РїСЂСЏРјР°СЏ"
+  ),
+  stringsAsFactors = FALSE
+)
+
+single_configs
+```
+
+```{r single-configuration-preview}
+# РџРѕРєР°Р·С‹РІР°РµРј РІСЃРµ РєРѕРЅС„РёРіСѓСЂР°С†РёРё СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№ РґРѕ Р·Р°РїСѓСЃРєР° СЌРєСЃРїРµСЂРёРјРµРЅС‚РѕРІ.
+single_config_images <- lapply(seq_len(nrow(single_configs)), function(i) {
+  matrix(0, nrow = single_configs$n_row[i], ncol = single_configs$n_col[i]) |>
+    add.line(a = single_configs$a[i], b = single_configs$b[i])
+})
+
+single_config_labels <- sprintf(
+  "%s\n(a = %.3f, b = %.3f)",
+  single_configs$scene_id,
+  single_configs$a,
+  single_configs$b
+)
+
+plot.matrix(
+  single_config_images,
+  from.0.to.1 = TRUE,
+  labels = single_config_labels,
+  nplots = 3
+)
+```
+
+```{r strict-configuration-preview}
+# Р’С‹РґРµР»СЏРµРј С‡РµС‚С‹СЂРµ РєРѕРЅС„РёРіСѓСЂР°С†РёРё, РєРѕС‚РѕСЂС‹Рµ РїСЂРѕС‰Рµ РІСЃРµРіРѕ РѕР±СЃСѓР¶РґР°С‚СЊ РґР»СЏ row.row.
+strict_single_configs <- single_configs |>
+  dplyr::filter(scene_id %in% strict_scene_ids)
+
+strict_config_images <- lapply(seq_len(nrow(strict_single_configs)), function(i) {
+  matrix(0, nrow = strict_single_configs$n_row[i], ncol = strict_single_configs$n_col[i]) |>
+    add.line(a = strict_single_configs$a[i], b = strict_single_configs$b[i])
+})
+
+strict_config_labels <- sprintf(
+  "%s\n(a = %.3f, b = %.3f)",
+  strict_single_configs$scene_id,
+  strict_single_configs$a,
+  strict_single_configs$b
+)
+
+plot.matrix(
+  strict_config_images,
+  from.0.to.1 = TRUE,
+  labels = strict_config_labels,
+  nplots = 2
+)
+```
+
+## РљРѕРЅС„РёРіСѓСЂР°С†РёРё РЎ РќРµСЃРєРѕР»СЊРєРёРјРё РџСЂСЏРјС‹РјРё
+
+Р§Р°СЃС‚СЊ СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё РЅРѕСЃРёС‚ РёСЃСЃР»РµРґРѕРІР°С‚РµР»СЊСЃРєРёР№ С…Р°СЂР°РєС‚РµСЂ.
+Р”Р»СЏ РІСЃРµРіРѕ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РѕРґРЅРѕ Рё С‚Рѕ Р¶Рµ С„РёРєСЃРёСЂРѕРІР°РЅРЅРѕРµ `num_of_lines`,
+Рё СЌС‚Рѕ Р·РЅР°С‡РёС‚РµР»СЊРЅРѕ РїСЂРѕС‰Рµ Р·Р°С‰РёС‰Р°С‚СЊ РґР»СЏ `col.row`, С‡РµРј РґР»СЏ `row.row`.
+
+```{r multi-configurations}
+# Р—Р°РґР°РµРј РЅРµР±РѕР»СЊС€РѕР№ РЅР°Р±РѕСЂ СЃС†РµРЅ СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+multi_scenes <- list(
+  list(
+    scene_id = "parallel_shallow",
+    description = "Р”РІРµ РїРѕР»РѕРіРёРµ РїР°СЂР°Р»Р»РµР»СЊРЅС‹Рµ РїСЂСЏРјС‹Рµ",
+    n_row = default_n_row,
+    n_col = default_n_col,
+    lines = data.frame(
+      a = c(0.5, 0.5),
+      b = c(10, 35)
+    )
+  ),
+  list(
+    scene_id = "parallel_steep",
+    description = "Р”РІРµ РєСЂСѓС‚С‹Рµ РїР°СЂР°Р»Р»РµР»СЊРЅС‹Рµ РїСЂСЏРјС‹Рµ",
+    n_row = default_n_row,
+    n_col = default_n_col,
+    lines = data.frame(
+      a = c(2, 2),
+      b = c(-15, 15)
+    )
+  ),
+  list(
+    scene_id = "crossing_diagonals",
+    description = "Р”РІРµ РїРµСЂРµСЃРµРєР°СЋС‰РёРµСЃСЏ РґРёР°РіРѕРЅР°Р»СЊРЅС‹Рµ РїСЂСЏРјС‹Рµ",
+    n_row = default_n_row,
+    n_col = default_n_col,
+    lines = data.frame(
+      a = c(1, -1),
+      b = c(0, 101)
+    )
+  ),
+  list(
+    scene_id = "three_mixed_lines",
+    description = "РўСЂРё РїСЂСЏРјС‹Рµ СЃ СЂР°Р·РЅС‹РјРё РЅР°РєР»РѕРЅР°РјРё",
+    n_row = default_n_row,
+    n_col = default_n_col,
+    lines = data.frame(
+      a = c(0.5, 2, -1),
+      b = c(10, -20, 95)
+    )
+  )
+)
+
+multi_scene_overview <- data.frame(
+  scene_id = vapply(multi_scenes, `[[`, character(1), "scene_id"),
+  description = vapply(multi_scenes, `[[`, character(1), "description"),
+  num_lines = vapply(multi_scenes, function(x) nrow(x$lines), integer(1)),
+  stringsAsFactors = FALSE
+)
+
+multi_scene_overview
+```
+
+```{r multi-configuration-preview}
+# РџРѕРєР°Р·С‹РІР°РµРј РІСЃРµ РєРѕРЅС„РёРіСѓСЂР°С†РёРё СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+make_multiline_image <- function(n_row, n_col, lines_df, intensity = 1) {
+  out <- matrix(0, nrow = n_row, ncol = n_col)
+  for (i in seq_len(nrow(lines_df))) {
+    out <- add.line(
+      out,
+      a = lines_df$a[i],
+      b = lines_df$b[i],
+      intensity = intensity
+    )
+  }
+  out
+}
+
+multi_config_images <- lapply(multi_scenes, function(scene) {
+  make_multiline_image(
+    n_row = scene$n_row,
+    n_col = scene$n_col,
+    lines_df = scene$lines
+  )
+})
+
+multi_config_labels <- vapply(multi_scenes, function(scene) {
+  line_labels <- paste(
+    sprintf("(a = %.2f, b = %.2f)", scene$lines$a, scene$lines$b),
+    collapse = "; "
+  )
+  paste(scene$scene_id, "\n", line_labels)
+}, character(1))
+
+plot.matrix(
+  multi_config_images,
+  from.0.to.1 = TRUE,
+  labels = multi_config_labels,
+  nplots = 2
+)
+```
+
+## Р’СЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹Рµ Р¤СѓРЅРєС†РёРё
+
+```{r helpers}
+# РћР±СЂРµР·Р°РµРј РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРЅС‹Рµ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ РѕР±СЂР°С‚РЅРѕ РІ РґРёР°РїР°Р·РѕРЅ [0, 1].
+clip01 <- function(m) {
+  m <- as.matrix(m)
+  m[!is.finite(m)] <- 0
+  m[m < 0] <- 0
+  m[m > 1] <- 1
+  m
+}
+
+# РЎС‚Р°РЅРґР°СЂС‚РЅР°СЏ MSE РЅР° СѓСЂРѕРІРЅРµ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ.
+mse <- function(truth, pred) {
+  mean((truth - pred)^2)
+}
+
+# РЎС‚СЂРѕРёРј РёР·РѕР±СЂР°Р¶РµРЅРёРµ СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№ РїРѕ РїР°СЂР°РјРµС‚СЂР°Рј (a, b).
+make_line_image <- function(n_row, n_col, a, b, intensity = 1) {
+  matrix(0, nrow = n_row, ncol = n_col) |>
+    add.line(a = a, b = b, intensity = intensity)
+}
+
+# РЎС‚СЂРѕРёРј РёР·РѕР±СЂР°Р¶РµРЅРёРµ СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+make_multiline_image <- function(n_row, n_col, lines_df, intensity = 1) {
+  out <- matrix(0, nrow = n_row, ncol = n_col)
+  for (i in seq_len(nrow(lines_df))) {
+    out <- add.line(
+      out,
+      a = lines_df$a[i],
+      b = lines_df$b[i],
+      intensity = intensity
+    )
+  }
+  out
+}
+
+# CSSA-РґРµРЅРѕР№Р·РµСЂ, РёСЃРїРѕР»СЊР·СѓРµРјС‹Р№ РІ СЃСЂР°РІРЅРµРЅРёРё РїРѕ MSE.
+cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
+  cleaned <- switch(
+    method,
+    "col.col" = m |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re(),
+    "col.row" = m |> dft() |> cssa.col(num.line = num_of_lines) |> idft.row() |> Re(),
+    "row.col" = m |> dft() |> cssa.row(num.line = num_of_lines) |> idft.col() |> Re(),
+    "row.row" = m |> dft() |> cssa.row(num.line = num_of_lines) |> idft.row() |> Re(),
+    stop("РќРµРёР·РІРµСЃС‚РЅС‹Р№ РјРµС‚РѕРґ: ", method)
+  )
+  clip01(cleaned)
+}
+
+# CSSA-РґРµС‚РµРєС‚РѕСЂ, РёСЃРїРѕР»СЊР·СѓРµРјС‹Р№ РІ СЃСЂР°РІРЅРµРЅРёРё РїРѕ HT.
+# РћРЅ РѕСЃС‚Р°РІР»СЏРµС‚ С‚РѕР»СЊРєРѕ РІРµСЂС…РЅРёР№ q-РєРІР°РЅС‚РёР»СЊ РїРѕ |signal| РїРѕСЃР»Рµ CSSA-РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ.
+cssa_detector_q <- function(matrix, num_of_lines = 1L, method = "row.row", q = 0.9) {
+  cleaned_matrix <- switch(
+    method,
+    "col.col" = matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re(),
+    "col.row" = matrix |> dft() |> cssa.col(num.line = num_of_lines) |> idft.row() |> Re(),
+    "row.col" = matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.col() |> Re(),
+    "row.row" = matrix |> dft() |> cssa.row(num.line = num_of_lines) |> idft.row() |> Re(),
+    stop("РќРµРёР·РІРµСЃС‚РЅС‹Р№ РјРµС‚РѕРґ: ", method)
+  )
+
+  cleaned_matrix <- as.matrix(cleaned_matrix)
+  cleaned_matrix[cleaned_matrix < 0.01] <- 0
+  cleaned_matrix[cleaned_matrix > 0.99] <- 1
+
+  threshold_value <- as.numeric(quantile(abs(cleaned_matrix), probs = q, na.rm = TRUE))
+  result_matrix <- cleaned_matrix
+  result_matrix[abs(result_matrix) <= threshold_value] <- 0
+  result_matrix[result_matrix < 0.01] <- 0
+  result_matrix[result_matrix > 0.99] <- 1
+  result_matrix
+}
+
+# РџРµСЂРµРІРѕРґРёРј РїР°СЂР°РјРµС‚СЂС‹ РїСЂСЏРјРѕР№ y = a x + b РІ РЅРѕСЂРјР°Р»СЊРЅСѓСЋ С„РѕСЂРјСѓ, РёСЃРїРѕР»СЊР·СѓРµРјСѓСЋ РІ РїСЂРѕСЃС‚СЂР°РЅСЃС‚РІРµ РҐР°С„Р°.
+convert_ab_to_rho_theta <- function(a, b) {
+  theta <- atan2(1, -a)
+  rho <- b / sqrt(a^2 + 1)
+  if (theta < 0) {
+    theta <- theta + pi
+    rho <- -rho
+  }
+  c(rho = rho, theta = theta)
+}
+
+# РР·РІР»РµРєР°РµРј top-k РїРёРєРѕРІ РёР· Р°РєРєСѓРјСѓР»СЏС‚РѕСЂР°.
+# Р”Р»СЏ РЅРµСЃРєРѕР»СЊРєРёС… РїСЂСЏРјС‹С… РїРѕРґР°РІР»СЏРµРј РЅРµР±РѕР»СЊС€СѓСЋ РѕРєСЂРµСЃС‚РЅРѕСЃС‚СЊ РІРѕРєСЂСѓРі РєР°Р¶РґРѕРіРѕ РїРёРєР°.
+find_k_max <- function(acc, k, qrho, qtheta, suppress = FALSE, window = 6L) {
+  acc_copy <- acc
+  maxima <- vector("list", k)
+
+  for (i in seq_len(k)) {
+    idx <- which(acc_copy == max(acc_copy), arr.ind = TRUE)[1, ]
+    maxima[[i]] <- c(rho = qrho[idx[1]], theta = qtheta[idx[2]])
+
+    if (suppress) {
+      r_range <- max(1, idx[1] - window):min(nrow(acc_copy), idx[1] + window)
+      c_range <- max(1, idx[2] - window):min(ncol(acc_copy), idx[2] + window)
+      acc_copy[r_range, c_range] <- 0
+    } else {
+      acc_copy[idx[1], idx[2]] <- 0
+    }
+  }
+
+  out <- do.call(rbind, maxima)
+  colnames(out) <- c("rho", "theta")
+  out
+}
+
+# РЎРѕРїРѕСЃС‚Р°РІР»СЏРµРј РїСЂРµРґСЃРєР°Р·Р°РЅРЅС‹Рµ РїСЂСЏРјС‹Рµ СЃ РёСЃС‚РёРЅРЅС‹РјРё Рё РІРѕР·РІСЂР°С‰Р°РµРј СЃСѓРјРјР°СЂРЅС‹Рµ РєРІР°РґСЂР°С‚С‹ РѕС€РёР±РѕРє.
+# Р­С‚Рѕ СЂР°Р±РѕС‚Р°РµС‚ Рё РґР»СЏ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№, Рё РґР»СЏ РЅРµСЃРєРѕР»СЊРєРёС… РїСЂСЏРјС‹С….
+compute_err <- function(true, pred) {
+  true <- as.matrix(true)
+  pred <- as.matrix(pred)
+
+  if (ncol(true) != 2 || ncol(pred) != 2) {
+    stop("true and pred must have two columns: rho and theta")
+  }
+
+  if (nrow(true) != nrow(pred)) {
+    stop("true and pred must have the same number of lines")
+  }
+
+  pair_err <- function(tr, tt, pr, pt) {
+    pt_alt <- (pt + pi) %% (2 * pi)
+    dtheta <- atan2(sin(tt - pt), cos(tt - pt))^2
+    dtheta_alt <- atan2(sin(tt - pt_alt), cos(tt - pt_alt))^2
+
+    loss_1 <- (tr - pr)^2 + dtheta
+    loss_2 <- (tr + pr)^2 + dtheta_alt
+
+    if (loss_1 <= loss_2) {
+      c(dr = (tr - pr)^2, dtheta = dtheta, total = loss_1)
+    } else {
+      c(dr = (tr + pr)^2, dtheta = dtheta_alt, total = loss_2)
+    }
+  }
+
+  n_lines <- nrow(true)
+  cost <- matrix(0, nrow = n_lines, ncol = n_lines)
+
+  for (i in seq_len(n_lines)) {
+    for (j in seq_len(n_lines)) {
+      cost[i, j] <- pair_err(
+        true[i, 1], true[i, 2],
+        pred[j, 1], pred[j, 2]
+      )[3]
+    }
+  }
+
+  if (n_lines == 1) {
+    out <- pair_err(true[1, 1], true[1, 2], pred[1, 1], pred[1, 2])
+    return(c(dr = unname(out[1]), dtheta = unname(out[2])))
+  }
+
+  all_perms <- function(v) {
+    if (length(v) == 1) {
+      return(matrix(v, nrow = 1))
+    }
+
+    out <- lapply(seq_along(v), function(i) {
+      rest <- all_perms(v[-i])
+      cbind(v[i], rest)
+    })
+    do.call(rbind, out)
+  }
+
+  best_perm <- NULL
+  best_cost <- Inf
+  perm_mat <- all_perms(seq_len(n_lines))
+
+  for (row_i in seq_len(nrow(perm_mat))) {
+    cur_perm <- perm_mat[row_i, ]
+    cur_cost <- sum(cost[cbind(seq_len(n_lines), cur_perm)])
+    if (cur_cost < best_cost) {
+      best_cost <- cur_cost
+      best_perm <- cur_perm
+    }
+  }
+
+  dr_total <- 0
+  dtheta_total <- 0
+  for (i in seq_len(n_lines)) {
+    out <- pair_err(
+      true[i, 1], true[i, 2],
+      pred[best_perm[i], 1], pred[best_perm[i], 2]
+    )
+    dr_total <- dr_total + out[1]
+    dtheta_total <- dtheta_total + out[2]
+  }
+
+  c(dr = unname(dr_total), dtheta = unname(dtheta_total))
+}
+
+# РџРµСЂРµРІРѕРґРёРј С‚Р°Р±Р»РёС†Сѓ РєРѕРЅС„РёРіСѓСЂР°С†РёР№, РіРґРµ РІ РєР°Р¶РґРѕР№ СЃС‚СЂРѕРєРµ РѕРґРЅР° РїСЂСЏРјР°СЏ, РІ РµРґРёРЅС‹Р№ СЃРїРёСЃРѕРє СЃС†РµРЅ.
+build_single_scenes <- function(config_df) {
+  lapply(seq_len(nrow(config_df)), function(i) {
+    list(
+      scene_id = config_df$scene_id[i],
+      description = config_df$description[i],
+      n_row = config_df$n_row[i],
+      n_col = config_df$n_col[i],
+      lines = data.frame(
+        a = config_df$a[i],
+        b = config_df$b[i]
+      )
+    )
+  })
+}
+
+# Р—Р°РїСѓСЃРєР°РµРј РїРѕР»РЅС‹Р№ СЌРєСЃРїРµСЂРёРјРµРЅС‚ РЅР° СЃРїРёСЃРєРµ СЃС†РµРЅ.
+# РћРґРёРЅ Рё С‚РѕС‚ Р¶Рµ С€СѓРјРЅС‹Р№ РІС…РѕРґ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РґР»СЏ РѕР±РѕРёС… РјРµС‚РѕРґРѕРІ РІРЅСѓС‚СЂРё РєР°Р¶РґРѕРіРѕ РїРѕРІС‚РѕСЂР°,
+# РїРѕСЌС‚РѕРјСѓ РїР°СЂРЅС‹Рµ С‚РµСЃС‚С‹ Р·РґРµСЃСЊ РєРѕСЂСЂРµРєС‚РЅС‹.
+run_scene_experiment <- function(
+  scenes,
+  n_repeats,
+  sigma_noise,
+  methods,
+  detector_q,
+  rho_step,
+  theta_step,
+  ht_window = 6L
+) {
+  n_total <- length(scenes) * n_repeats * length(methods)
+  mse_rows <- vector("list", n_total)
+  ht_rows <- vector("list", n_total)
+  idx_out <- 1L
+
+  for (scene in scenes) {
+    base_matrix <- make_multiline_image(
+      n_row = scene$n_row,
+      n_col = scene$n_col,
+      lines_df = scene$lines
+    )
+
+    true_lines <- t(vapply(
+      seq_len(nrow(scene$lines)),
+      function(i) convert_ab_to_rho_theta(scene$lines$a[i], scene$lines$b[i]),
+      numeric(2)
+    ))
+    colnames(true_lines) <- c("rho", "theta")
+
+    n_true_lines <- nrow(scene$lines)
+
+    for (rep_i in seq_len(n_repeats)) {
+      noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
+
+      for (method_name in methods) {
+        denoised <- cssa_denoise(
+          noisy_matrix,
+          num_of_lines = n_true_lines,
+          method = method_name
+        )
+
+        mse_rows[[idx_out]] <- data.frame(
+          scene_id = scene$scene_id,
+          description = scene$description,
+          num_lines = n_true_lines,
+          sigma = sigma_noise,
+          rep = rep_i,
+          method = method_name,
+          mse = mse(base_matrix, denoised),
+          stringsAsFactors = FALSE
+        )
+
+        ht <- make_accumulator(
+          noisy_matrix,
+          detector = function(m) {
+            cssa_detector_q(
+              m,
+              num_of_lines = n_true_lines,
+              method = method_name,
+              q = detector_q
+            )
+          },
+          rho_step = rho_step,
+          theta_step = theta_step
+        )
+
+        pred_lines <- find_k_max(
+          acc = ht$accumulator,
+          k = n_true_lines,
+          qrho = ht$rho,
+          qtheta = ht$theta,
+          suppress = n_true_lines > 1,
+          window = ht_window
+        )
+
+        err <- compute_err(true_lines, pred_lines)
+
+        ht_rows[[idx_out]] <- data.frame(
+          scene_id = scene$scene_id,
+          description = scene$description,
+          num_lines = n_true_lines,
+          sigma = sigma_noise,
+          rep = rep_i,
+          method = method_name,
+          dr = as.numeric(err["dr"]),
+          dtheta = as.numeric(err["dtheta"]),
+          rho_rmse = sqrt(as.numeric(err["dr"]) / n_true_lines),
+          theta_err = sqrt(as.numeric(err["dtheta"]) / n_true_lines),
+          stringsAsFactors = FALSE
+        )
+
+        idx_out <- idx_out + 1L
+      }
+    }
+  }
+
+  list(
+    mse_samples = do.call(rbind, mse_rows),
+    ht_samples = do.call(rbind, ht_rows)
+  )
+}
+
+# РџСЂРµРѕР±СЂР°Р·СѓРµРј РїР°СЂРЅС‹Рµ РІС‹Р±РѕСЂРєРё РёР· РґР»РёРЅРЅРѕРіРѕ С„РѕСЂРјР°С‚Р° РІ СЂР°Р·РЅРѕСЃС‚Рё row.row vs col.row.
+make_paired_delta <- function(df, value_col) {
+  row_df <- df |>
+    dplyr::filter(method == "row.row") |>
+    dplyr::select(scene_id, description, rep, value = dplyr::all_of(value_col))
+
+  col_df <- df |>
+    dplyr::filter(method == "col.row") |>
+    dplyr::select(scene_id, description, rep, value = dplyr::all_of(value_col))
+
+  names(row_df)[names(row_df) == "value"] <- "row_value"
+  names(col_df)[names(col_df) == "value"] <- "col_value"
+
+  out <- merge(
+    row_df,
+    col_df,
+    by = c("scene_id", "description", "rep"),
+    sort = FALSE
+  )
+  out$delta <- out$col_value - out$row_value
+  out
+}
+
+# Р—Р°РїСѓСЃРєР°РµРј РїР°СЂРЅС‹Р№ t-РєСЂРёС‚РµСЂРёР№ Рё РїР°СЂРЅС‹Р№ РєСЂРёС‚РµСЂРёР№ РЈРёР»РєРѕРєСЃРѕРЅР° РґР»СЏ РєР°Р¶РґРѕР№ СЃС†РµРЅС‹.
+summarise_paired_tests <- function(delta_df, metric_name) {
+  split_idx <- split(seq_len(nrow(delta_df)), delta_df$scene_id)
+
+  out <- lapply(split_idx, function(idx) {
+    cur <- delta_df[idx, ]
+    t_res <- t.test(cur$col_value, cur$row_value, paired = TRUE)
+    w_res <- suppressWarnings(
+      wilcox.test(cur$col_value, cur$row_value, paired = TRUE, exact = FALSE)
+    )
+
+    data.frame(
+      scene_id = cur$scene_id[1],
+      description = cur$description[1],
+      metric = metric_name,
+      mean_row = mean(cur$row_value),
+      mean_col = mean(cur$col_value),
+      mean_delta = mean(cur$delta),
+      median_delta = median(cur$delta),
+      better_mean = ifelse(
+        mean(cur$delta) < 0,
+        "col.row",
+        ifelse(mean(cur$delta) > 0, "row.row", "tie")
+      ),
+      t_p_value = t_res$p.value,
+      wilcox_p_value = w_res$p.value,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  out <- do.call(rbind, out)
+  out$t_p_adj_bh <- p.adjust(out$t_p_value, method = "BH")
+  out$wilcox_p_adj_bh <- p.adjust(out$wilcox_p_value, method = "BH")
+  out[order(out$scene_id), ]
+}
+
+# Р—Р°РїСѓСЃРєР°РµРј РѕРґРёРЅ РіР»РѕР±Р°Р»СЊРЅС‹Р№ РїР°СЂРЅС‹Р№ t-РєСЂРёС‚РµСЂРёР№ Рё РѕРґРёРЅ РіР»РѕР±Р°Р»СЊРЅС‹Р№ РїР°СЂРЅС‹Р№ РєСЂРёС‚РµСЂРёР№ РЈРёР»РєРѕРєСЃРѕРЅР°.
+summarise_overall_test <- function(delta_df, metric_name) {
+  t_res <- t.test(delta_df$col_value, delta_df$row_value, paired = TRUE)
+  w_res <- suppressWarnings(
+    wilcox.test(delta_df$col_value, delta_df$row_value, paired = TRUE, exact = FALSE)
+  )
+
+  data.frame(
+    metric = metric_name,
+    mean_row = mean(delta_df$row_value),
+    mean_col = mean(delta_df$col_value),
+    mean_delta = mean(delta_df$delta),
+    median_delta = median(delta_df$delta),
+    better_mean = ifelse(
+      mean(delta_df$delta) < 0,
+      "col.row",
+      ifelse(mean(delta_df$delta) > 0, "row.row", "tie")
+    ),
+    t_p_value = t_res$p.value,
+    wilcox_p_value = w_res$p.value,
+    stringsAsFactors = FALSE
+  )
+}
+
+# РџСЂРѕРіРѕРЅСЏРµРј sigma-sweep РЅР° РѕРґРЅРѕР№ РІС‹Р±СЂР°РЅРЅРѕР№ СЃС†РµРЅРµ СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№.
+# Р’ HT-С‡Р°СЃС‚Рё Р·РґРµСЃСЊ СЏРІРЅРѕ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РѕР±С‹С‡РЅС‹Р№ РјР°РєСЃРёРјСѓРј Р±РµР· NMS.
+run_single_scene_sigma_sweep <- function(
+  scene,
+  sigmas,
+  n_repeats,
+  methods,
+  detector_q,
+  rho_step,
+  theta_step
+) {
+  base_matrix <- make_multiline_image(
+    n_row = scene$n_row,
+    n_col = scene$n_col,
+    lines_df = scene$lines
+  )
+
+  n_true_lines <- nrow(scene$lines)
+  if (n_true_lines != 1L) {
+    stop("run_single_scene_sigma_sweep РїСЂРµРґРЅР°Р·РЅР°С‡РµРЅ С‚РѕР»СЊРєРѕ РґР»СЏ СЃС†РµРЅ СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№")
+  }
+
+  true_line <- matrix(
+    convert_ab_to_rho_theta(scene$lines$a[1], scene$lines$b[1]),
+    nrow = 1
+  )
+
+  n_total <- length(sigmas) * n_repeats * length(methods)
+  mse_rows <- vector("list", n_total)
+  ht_rows <- vector("list", n_total)
+  idx_out <- 1L
+
+  for (sigma_i in sigmas) {
+    for (rep_i in seq_len(n_repeats)) {
+      noisy_matrix <- add.noise(base_matrix, sigma = sigma_i)
+
+      for (method_name in methods) {
+        denoised <- cssa_denoise(
+          noisy_matrix,
+          num_of_lines = n_true_lines,
+          method = method_name
+        )
+
+        mse_rows[[idx_out]] <- data.frame(
+          scene_id = scene$scene_id,
+          description = scene$description,
+          sigma = sigma_i,
+          rep = rep_i,
+          method = method_name,
+          mse = mse(base_matrix, denoised),
+          stringsAsFactors = FALSE
+        )
+
+        ht <- make_accumulator(
+          noisy_matrix,
+          detector = function(m) {
+            cssa_detector_q(
+              m,
+              num_of_lines = n_true_lines,
+              method = method_name,
+              q = detector_q
+            )
+          },
+          rho_step = rho_step,
+          theta_step = theta_step
+        )
+
+        pred_line <- find_k_max(
+          acc = ht$accumulator,
+          k = 1L,
+          qrho = ht$rho,
+          qtheta = ht$theta,
+          suppress = FALSE,
+          window = 0L
+        )
+
+        err <- compute_err(true_line, pred_line)
+
+        ht_rows[[idx_out]] <- data.frame(
+          scene_id = scene$scene_id,
+          description = scene$description,
+          sigma = sigma_i,
+          rep = rep_i,
+          method = method_name,
+          dr = as.numeric(err["dr"]),
+          dtheta = as.numeric(err["dtheta"]),
+          rho_rmse = sqrt(as.numeric(err["dr"])),
+          theta_err = sqrt(as.numeric(err["dtheta"])),
+          stringsAsFactors = FALSE
+        )
+
+        idx_out <- idx_out + 1L
+      }
+    }
+  }
+
+  list(
+    mse_samples = do.call(rbind, mse_rows),
+    ht_samples = do.call(rbind, ht_rows)
+  )
+}
+```
+
+## Р­РєСЃРїРµСЂРёРјРµРЅС‚ РЎ РћРґРЅРѕР№ РџСЂСЏРјРѕР№ РќР° Р’СЃРµС… РљРѕРЅС„РёРіСѓСЂР°С†РёСЏС…
+
+```{r single-line-run}
+# РћРґРёРЅ СЂР°Р· Р·Р°РїСѓСЃРєР°РµРј РѕСЃРЅРѕРІРЅРѕРµ СЃСЂР°РІРЅРµРЅРёРµ СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№ РЅР° РІСЃРµС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС….
+single_scenes <- build_single_scenes(single_configs)
+
+single_results <- run_scene_experiment(
+  scenes = single_scenes,
+  n_repeats = single_n_repeats,
+  sigma_noise = single_sigma_noise,
+  methods = methods_compare,
+  detector_q = detector_q,
+  rho_step = rho_step_ht,
+  theta_step = theta_step_ht,
+  ht_window = ht_nms_window
+)
+
+single_mse_samples <- single_results$mse_samples
+single_ht_samples <- single_results$ht_samples
+
+head(single_mse_samples, 10)
+head(single_ht_samples, 10)
+```
+
+## РЎС‚СЂРѕРіРёР№ Р‘Р»РѕРє РЎ РћРґРЅРѕР№ РџСЂСЏРјРѕР№
+
+Р­С‚РѕС‚ Р±Р»РѕРє СЏРІР»СЏРµС‚СЃСЏ РїСЂСЏРјС‹Рј РѕС‚РІРµС‚РѕРј РЅР° РјРµС‚РѕРґРѕР»РѕРіРёС‡РµСЃРєРѕРµ Р·Р°РјРµС‡Р°РЅРёРµ РїСЂРѕ `row.row`.
+Р—РґРµСЃСЊ РёСЃРїРѕР»СЊР·СѓСЋС‚СЃСЏ С‚РѕР»СЊРєРѕ РґРІР° РґРёР°РіРѕРЅР°Р»СЊРЅС‹С… Рё РґРІР° steep-СЃР»СѓС‡Р°СЏ.
+
+```{r strict-single-samples}
+# РћСЃС‚Р°РІР»СЏРµРј С‚РѕР»СЊРєРѕ С‡РµС‚С‹СЂРµ СЃС‚СЂРѕРіРёРµ РєРѕРЅС„РёРіСѓСЂР°С†РёРё РґР»СЏ РѕСЃРЅРѕРІРЅРѕРіРѕ РѕР±СЃСѓР¶РґРµРЅРёСЏ row.row.
+strict_mse_samples <- single_mse_samples |>
+  dplyr::filter(scene_id %in% strict_scene_ids)
+
+strict_ht_samples <- single_ht_samples |>
+  dplyr::filter(scene_id %in% strict_scene_ids)
+
+strict_mse_samples |>
+  dplyr::count(scene_id, method)
+
+strict_ht_samples |>
+  dplyr::count(scene_id, method)
+```
+
+```{r strict-single-mse-summary}
+# РЎСѓРјРјРёСЂСѓРµРј MSE РЅР° С‡РµС‚С‹СЂРµС… СЃС‚СЂРѕРіРёС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС….
+strict_mse_summary <- strict_mse_samples |>
+  dplyr::group_by(scene_id, description, method) |>
+  dplyr::summarise(
+    mean_mse = mean(mse),
+    median_mse = median(mse),
+    sd_mse = sd(mse),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(scene_id, mean_mse)
+
+strict_mse_summary
+```
+
+```{r strict-single-mse-tests}
+# Р—Р°РїСѓСЃРєР°РµРј РїР°СЂРЅС‹Рµ СЃС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёРµ С‚РµСЃС‚С‹ РґР»СЏ MSE РЅР° С‡РµС‚С‹СЂРµС… СЃС‚СЂРѕРіРёС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС….
+strict_mse_delta <- make_paired_delta(strict_mse_samples, "mse")
+
+strict_mse_tests <- summarise_paired_tests(strict_mse_delta, "mse")
+strict_mse_overall <- summarise_overall_test(strict_mse_delta, "mse")
+
+strict_mse_tests
+strict_mse_overall
+```
+
+```{r strict-single-ht-summary}
+# РЎСѓРјРјРёСЂСѓРµРј HT-РѕС€РёР±РєРё РЅР° С‡РµС‚С‹СЂРµС… СЃС‚СЂРѕРіРёС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС….
+strict_ht_summary <- strict_ht_samples |>
+  dplyr::group_by(scene_id, description, method) |>
+  dplyr::summarise(
+    mean_rho_rmse = mean(rho_rmse),
+    median_rho_rmse = median(rho_rmse),
+    mean_theta_err = mean(theta_err),
+    median_theta_err = median(theta_err),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(scene_id, mean_theta_err, mean_rho_rmse)
+
+strict_ht_summary
+```
+
+```{r strict-single-ht-tests}
+# Р—Р°РїСѓСЃРєР°РµРј РїР°СЂРЅС‹Рµ СЃС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёРµ С‚РµСЃС‚С‹ РґР»СЏ РѕС€РёР±РѕРє РїРѕ rho Рё theta РЅР° С‡РµС‚С‹СЂРµС… СЃС‚СЂРѕРіРёС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС….
+strict_theta_delta <- make_paired_delta(strict_ht_samples, "theta_err")
+strict_rho_delta <- make_paired_delta(strict_ht_samples, "rho_rmse")
+
+strict_theta_tests <- summarise_paired_tests(strict_theta_delta, "theta_err")
+strict_theta_overall <- summarise_overall_test(strict_theta_delta, "theta_err")
+
+strict_rho_tests <- summarise_paired_tests(strict_rho_delta, "rho_rmse")
+strict_rho_overall <- summarise_overall_test(strict_rho_delta, "rho_rmse")
+
+strict_theta_tests
+strict_theta_overall
+strict_rho_tests
+strict_rho_overall
+```
+
+```{r strict-single-ht-matrices}
+# РџРѕРєР°Р·С‹РІР°РµРј РєРѕРјРїР°РєС‚РЅС‹Рµ РјР°С‚СЂРёС†С‹ СЃСЂРµРґРЅРёС… HT-РѕС€РёР±РѕРє РґР»СЏ СЃС‚СЂРѕРіРѕРіРѕ Р±Р»РѕРєР°.
+xtabs(mean_rho_rmse ~ scene_id + method, data = strict_ht_summary)
+xtabs(mean_theta_err ~ scene_id + method, data = strict_ht_summary)
+```
+
+```{r strict-theta-boxplot}
+# РЎС‚СЂРѕРёРј СЂР°СЃРїСЂРµРґРµР»РµРЅРёСЏ РѕС€РёР±РєРё РїРѕ theta РґР»СЏ С‡РµС‚С‹СЂРµС… СЃС‚СЂРѕРіРёС… РєРѕРЅС„РёРіСѓСЂР°С†РёР№.
+strict_theta_groups <- split(
+  strict_ht_samples$theta_err,
+  interaction(strict_ht_samples$scene_id, strict_ht_samples$method, sep = " | ")
+)
+
+boxplot(
+  strict_theta_groups,
+  las = 2,
+  cex.axis = 0.8,
+  ylab = "РѕС€РёР±РєР° РїРѕ theta (СЂР°РґРёР°РЅС‹)",
+  main = "РЎС‚СЂРѕРіРёР№ Р±Р»РѕРє: РѕС€РёР±РєР° РїРѕ theta РїРѕ РєРѕРЅС„РёРіСѓСЂР°С†РёСЏРј Рё РјРµС‚РѕРґР°Рј"
+)
+abline(h = 0, col = "grey70")
+```
+
+## РћРґРЅР° РџСЂСЏРјР°СЏ РќР° Р’СЃРµС… РљРѕРЅС„РёРіСѓСЂР°С†РёСЏС…
+
+```{r single-line-mse-summary}
+# РЎСѓРјРјРёСЂСѓРµРј MSE РЅР° РІСЃРµС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС… СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№.
+single_mse_summary <- single_mse_samples |>
+  dplyr::group_by(scene_id, description, method) |>
+  dplyr::summarise(
+    mean_mse = mean(mse),
+    median_mse = median(mse),
+    sd_mse = sd(mse),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(scene_id, mean_mse)
+
+single_mse_summary
+```
+
+```{r single-line-mse-tests}
+# Р—Р°РїСѓСЃРєР°РµРј РїР°СЂРЅС‹Рµ СЃС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёРµ С‚РµСЃС‚С‹ РґР»СЏ MSE РЅР° РІСЃРµС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС… СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№.
+single_mse_delta <- make_paired_delta(single_mse_samples, "mse")
+
+single_mse_tests <- summarise_paired_tests(single_mse_delta, "mse")
+single_mse_overall <- summarise_overall_test(single_mse_delta, "mse")
+
+single_mse_tests
+single_mse_overall
+```
+
+```{r single-line-mse-matrix}
+# РџРѕРєР°Р·С‹РІР°РµРј РєРѕРјРїР°РєС‚РЅСѓСЋ РјР°С‚СЂРёС†Сѓ СЃСЂРµРґРЅРёС… Р·РЅР°С‡РµРЅРёР№ MSE.
+xtabs(mean_mse ~ scene_id + method, data = single_mse_summary)
+```
+
+```{r single-line-ht-summary}
+# РЎСѓРјРјРёСЂСѓРµРј HT-РѕС€РёР±РєРё РЅР° РІСЃРµС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС… СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№.
+single_ht_summary <- single_ht_samples |>
+  dplyr::group_by(scene_id, description, method) |>
+  dplyr::summarise(
+    mean_rho_rmse = mean(rho_rmse),
+    median_rho_rmse = median(rho_rmse),
+    mean_theta_err = mean(theta_err),
+    median_theta_err = median(theta_err),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(scene_id, mean_theta_err, mean_rho_rmse)
+
+single_ht_summary
+```
+
+```{r single-line-ht-tests}
+# Р—Р°РїСѓСЃРєР°РµРј РїР°СЂРЅС‹Рµ СЃС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёРµ С‚РµСЃС‚С‹ РґР»СЏ РѕС€РёР±РѕРє РїРѕ rho Рё theta РЅР° РІСЃРµС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС… СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№.
+single_theta_delta <- make_paired_delta(single_ht_samples, "theta_err")
+single_rho_delta <- make_paired_delta(single_ht_samples, "rho_rmse")
+
+single_theta_tests <- summarise_paired_tests(single_theta_delta, "theta_err")
+single_theta_overall <- summarise_overall_test(single_theta_delta, "theta_err")
+
+single_rho_tests <- summarise_paired_tests(single_rho_delta, "rho_rmse")
+single_rho_overall <- summarise_overall_test(single_rho_delta, "rho_rmse")
+
+single_theta_tests
+single_theta_overall
+single_rho_tests
+single_rho_overall
+```
+
+```{r single-line-ht-matrices}
+# РџРѕРєР°Р·С‹РІР°РµРј РєРѕРјРїР°РєС‚РЅС‹Рµ РјР°С‚СЂРёС†С‹ СЃСЂРµРґРЅРёС… HT-РѕС€РёР±РѕРє РЅР° РІСЃРµС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС… СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№.
+xtabs(mean_rho_rmse ~ scene_id + method, data = single_ht_summary)
+xtabs(mean_theta_err ~ scene_id + method, data = single_ht_summary)
+```
+
+## РђРЅР°Р»РёР· РћС€РёР±РєРё РџРѕ Theta
+
+Р Р°Р±РѕС‡Р°СЏ РіРёРїРѕС‚РµР·Р° СЃРѕСЃС‚РѕРёС‚ РІ С‚РѕРј, С‡С‚Рѕ `col.row` С‚РѕС‡РЅРµРµ РѕС†РµРЅРёРІР°РµС‚ `theta`, С‡РµРј `row.row`.
+РЎР»РµРґСѓСЋС‰РёРµ С‡Р°РЅРєРё РІС‹РґРµР»СЏСЋС‚ РІС‹Р±РѕСЂРєСѓ РѕС€РёР±РѕРє РїРѕ `theta`, Р° С‚Р°РєР¶Рµ РїРѕРєР°Р·С‹РІР°СЋС‚,
+РєР°Рє `MSE` Рё HT-РѕС€РёР±РєРё РјРµРЅСЏСЋС‚СЃСЏ РїРѕ `sigma` РЅР° РѕРґРЅРѕР№ РІС‹Р±СЂР°РЅРЅРѕР№ СЃС†РµРЅРµ СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№.
+
+```{r theta-sample}
+library(dplyr)
+# РЎС‚СЂРѕРёРј РѕС‚РґРµР»СЊРЅСѓСЋ РІС‹Р±РѕСЂРєСѓ РѕС€РёР±РѕРє РїРѕ theta РґР»СЏ РіСЂР°С„РёРєРѕРІ Рё РґРѕРїРѕР»РЅРёС‚РµР»СЊРЅРѕРіРѕ Р°РЅР°Р»РёР·Р°.
+theta_error_sample <- single_ht_samples |>
+  dplyr::left_join(
+    single_configs |>
+      dplyr::select(scene_id, a, b),
+    by = "scene_id"
+  ) |>
+  dplyr::mutate(
+    true_theta = vapply(
+      seq_len(n()),
+      function(i) convert_ab_to_rho_theta(a[i], b[i])["theta"],
+      numeric(1)
+    )
+  )
+
+head(theta_error_sample, 12)
+```
+
+```{r mse-vs-sigma-curve}
+# РџРѕРІС‚РѕСЂСЏРµРј РѕРґРЅСѓ РІС‹Р±СЂР°РЅРЅСѓСЋ СЃС†РµРЅСѓ СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№ РґР»СЏ РЅРµСЃРєРѕР»СЊРєРёС… Р·РЅР°С‡РµРЅРёР№ sigma
+# Рё СЃСѓРјРјРёСЂСѓРµРј MSE РґРµРЅРѕР№Р·РёРЅРіР° РїРѕ С‚РѕРјСѓ Р¶Рµ РїСЂРёРЅС†РёРїСѓ, С‡С‚Рѕ Рё РІ comparison-РѕС‚С‡РµС‚Рµ.
+sigma_grid <- c(0, 0.2, 0.4, 0.6, 0.8)
+sigma_curve_scene_id <- "steep_full"
+sigma_curve_n_repeats <- 10
+
+rho_step_ht <- 0.9
+theta_step_ht <- 0.01
+
+sigma_scene <- single_scenes[[which(vapply(single_scenes, function(x) x$scene_id, character(1)) == sigma_curve_scene_id)]]
+
+if (length(sigma_scene) == 0) {
+  stop("РќРµРёР·РІРµСЃС‚РЅС‹Р№ sigma_curve_scene_id: ", sigma_curve_scene_id)
+}
+
+sigma_curve_results <- run_single_scene_sigma_sweep(
+  scene = sigma_scene,
+  sigmas = sigma_grid,
+  n_repeats = sigma_curve_n_repeats,
+  methods = methods_compare,
+  detector_q = detector_q,
+  rho_step = rho_step_ht,
+  theta_step = theta_step_ht
+)
+
+mse_sigma_samples <- sigma_curve_results$mse_samples
+
+summary_by_sigma <- mse_sigma_samples |>
+  dplyr::group_by(method, sigma) |>
+  dplyr::summarise(
+    mean_mse = mean(mse),
+    sd_mse = sd(mse),
+    .groups = "drop"
+  )
+
+ggplot(summary_by_sigma, aes(x = sigma, y = mean_mse, color = method)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.7) +
+  scale_color_manual(values = c("row.row" = "firebrick", "col.row" = "steelblue")) +
+  labs(
+    x = "sigma",
+    y = "СЃСЂРµРґРЅРёР№ MSE",
+    color = "method",
+    title = paste("РћРґРЅР° РїСЂСЏРјР°СЏ:", sigma_scene$scene_id, "- MSE РІ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РѕС‚ sigma")
+  ) +
+  theme_minimal()
+
+summary_by_sigma
+```
+
+```{r}
+library(dplyr)
+df <- read.csv(file.path("line_experiment", "ht_error_samples.csv")) 
+
+df <- df |> select(c("config_id", "method", "dtheta", "dr" ) ) |> group_by(method, config_id) |> summarise(mean_theta=mean(dtheta), mean_rho=mean(dr), median_theta=median(dtheta), median_rho=median(dr))
+
+xtabs(mean_theta ~ config_id + method, data=df)
+xtabs(median_theta ~ config_id + method, data=df)
+
+xtabs(mean_rho ~ config_id + method, data=df)
+xtabs(median_rho ~ config_id + method, data=df)
+```
+
+
+```{r ht-vs-sigma-curves}
+# РСЃРїРѕР»СЊР·СѓРµРј С‚РѕС‚ Р¶Рµ sigma-sweep РґР»СЏ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№, С‡С‚РѕР±С‹ СЃСѓРјРјРёСЂРѕРІР°С‚СЊ HT-РѕС€РёР±РєРё Р±РµР· NMS.
+ht_sigma_samples <- sigma_curve_results$ht_samples
+
+ht_summary_by_sigma <- ht_sigma_samples |>
+  dplyr::group_by(method, sigma) |>
+  dplyr::summarise(
+    mean_rho_rmse = mean(rho_rmse),
+    mean_theta_err = mean(theta_err),
+    .groups = "drop"
+  )
+
+ggplot(ht_summary_by_sigma, aes(x = sigma, y = mean_rho_rmse, color = method)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.7) +
+  scale_color_manual(values = c("row.row" = "firebrick", "col.row" = "steelblue")) +
+  labs(
+    x = "sigma",
+    y = "СЃСЂРµРґРЅРёР№ rho RMSE",
+    color = "method",
+    title = paste("РћРґРЅР° РїСЂСЏРјР°СЏ:", sigma_scene$scene_id, "- РѕС€РёР±РєР° HT РїРѕ rho РІ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РѕС‚ sigma")
+  ) +
+  theme_minimal()
+
+ggplot(ht_summary_by_sigma, aes(x = sigma, y = mean_theta_err, color = method)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.7) +
+  scale_color_manual(values = c("row.row" = "firebrick", "col.row" = "steelblue")) +
+  labs(
+    x = "sigma",
+    y = "СЃСЂРµРґРЅСЏСЏ РѕС€РёР±РєР° РїРѕ theta (СЂР°РґРёР°РЅС‹)",
+    color = "method",
+    title = paste("РћРґРЅР° РїСЂСЏРјР°СЏ:", sigma_scene$scene_id, "- РѕС€РёР±РєР° HT РїРѕ theta РІ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РѕС‚ sigma")
+  ) +
+  theme_minimal()
+
+ht_summary_by_sigma
+```
+
+```{r theta-error-boxplot}
+# РЎС‚СЂРѕРёРј РїРѕР»РЅСѓСЋ РІС‹Р±РѕСЂРєСѓ РѕС€РёР±РѕРє РїРѕ theta РїРѕ РєРѕРЅС„РёРіСѓСЂР°С†РёСЏРј Рё РјРµС‚РѕРґР°Рј.
+theta_groups <- split(
+  theta_error_sample$theta_err,
+  interaction(theta_error_sample$scene_id, theta_error_sample$method, sep = " | ")
+)
+
+boxplot(
+  theta_groups,
+  las = 2,
+  cex.axis = 0.8,
+  ylab = "РѕС€РёР±РєР° РїРѕ theta (СЂР°РґРёР°РЅС‹)",
+  main = "Р’С‹Р±РѕСЂРєР° РѕС€РёР±РѕРє РїРѕ theta РЅР° РІСЃРµС… РєРѕРЅС„РёРіСѓСЂР°С†РёСЏС… СЃ РѕРґРЅРѕР№ РїСЂСЏРјРѕР№"
+)
+abline(h = 0, col = "grey70")
+```
+
+## РСЃСЃР»РµРґРѕРІР°С‚РµР»СЊСЃРєРёР№ Р‘Р»РѕРє РЎ РќРµСЃРєРѕР»СЊРєРёРјРё РџСЂСЏРјС‹РјРё
+
+```{r multi-line-run}
+# Р—Р°РїСѓСЃРєР°РµРј РёСЃСЃР»РµРґРѕРІР°С‚РµР»СЊСЃРєРѕРµ СЃСЂР°РІРЅРµРЅРёРµ РЅР° СЃС†РµРЅР°С… СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+multi_results <- run_scene_experiment(
+  scenes = multi_scenes,
+  n_repeats = multi_n_repeats,
+  sigma_noise = multi_sigma_noise,
+  methods = methods_compare,
+  detector_q = detector_q,
+  rho_step = rho_step_ht,
+  theta_step = theta_step_ht,
+  ht_window = ht_nms_window
+)
+
+multi_mse_samples <- multi_results$mse_samples
+multi_ht_samples <- multi_results$ht_samples
+
+head(multi_mse_samples, 10)
+head(multi_ht_samples, 10)
+```
+
+```{r multi-line-mse-summary}
+# РЎСѓРјРјРёСЂСѓРµРј MSE РЅР° СЃС†РµРЅР°С… СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+multi_mse_summary <- multi_mse_samples |>
+  dplyr::group_by(scene_id, description, method) |>
+  dplyr::summarise(
+    mean_mse = mean(mse),
+    median_mse = median(mse),
+    sd_mse = sd(mse),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(scene_id, mean_mse)
+
+multi_mse_summary
+```
+
+```{r multi-line-mse-tests}
+# Р—Р°РїСѓСЃРєР°РµРј РїР°СЂРЅС‹Рµ СЃС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёРµ С‚РµСЃС‚С‹ РґР»СЏ MSE РЅР° СЃС†РµРЅР°С… СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+multi_mse_delta <- make_paired_delta(multi_mse_samples, "mse")
+
+multi_mse_tests <- summarise_paired_tests(multi_mse_delta, "mse")
+multi_mse_overall <- summarise_overall_test(multi_mse_delta, "mse")
+
+multi_mse_tests
+multi_mse_overall
+```
+
+```{r multi-line-ht-summary}
+# РЎСѓРјРјРёСЂСѓРµРј HT-РѕС€РёР±РєРё РЅР° СЃС†РµРЅР°С… СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+multi_ht_summary <- multi_ht_samples |>
+  dplyr::group_by(scene_id, description, method) |>
+  dplyr::summarise(
+    mean_rho_rmse = mean(rho_rmse),
+    median_rho_rmse = median(rho_rmse),
+    mean_theta_err = mean(theta_err),
+    median_theta_err = median(theta_err),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(scene_id, mean_theta_err, mean_rho_rmse)
+
+multi_ht_summary
+```
+
+```{r multi-line-ht-tests}
+# Р—Р°РїСѓСЃРєР°РµРј РїР°СЂРЅС‹Рµ СЃС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёРµ С‚РµСЃС‚С‹ РґР»СЏ РѕС€РёР±РѕРє РїРѕ rho Рё theta РЅР° СЃС†РµРЅР°С… СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+multi_theta_delta <- make_paired_delta(multi_ht_samples, "theta_err")
+multi_rho_delta <- make_paired_delta(multi_ht_samples, "rho_rmse")
+
+multi_theta_tests <- summarise_paired_tests(multi_theta_delta, "theta_err")
+multi_theta_overall <- summarise_overall_test(multi_theta_delta, "theta_err")
+
+multi_rho_tests <- summarise_paired_tests(multi_rho_delta, "rho_rmse")
+multi_rho_overall <- summarise_overall_test(multi_rho_delta, "rho_rmse")
+
+multi_theta_tests
+multi_theta_overall
+multi_rho_tests
+multi_rho_overall
+```
+
+```{r multi-line-ht-matrices}
+# РџРѕРєР°Р·С‹РІР°РµРј РєРѕРјРїР°РєС‚РЅС‹Рµ РјР°С‚СЂРёС†С‹ СЃСЂРµРґРЅРёС… HT-РѕС€РёР±РѕРє РЅР° СЃС†РµРЅР°С… СЃ РЅРµСЃРєРѕР»СЊРєРёРјРё РїСЂСЏРјС‹РјРё.
+xtabs(mean_rho_rmse ~ scene_id + method, data = multi_ht_summary)
+xtabs(mean_theta_err ~ scene_id + method, data = multi_ht_summary)
+```
+
+## Р­РєСЃРїРѕСЂС‚ РўР°Р±Р»РёС†
+
+```{r export-tables, include=FALSE}
+# РЎРѕС…СЂР°РЅСЏРµРј РѕСЃРЅРѕРІРЅС‹Рµ С‚Р°Р±Р»РёС†С‹ РІС‹Р±РѕСЂРѕРє, С‡С‚РѕР±С‹ РёС… РјРѕР¶РЅРѕ Р±С‹Р»Рѕ РїСЂРѕСЃРјРѕС‚СЂРµС‚СЊ РІРЅРµ РѕС‚С‡РµС‚Р°.
+#write.csv(single_mse_samples, "line_experiment2_single_mse_samples.csv", row.names = FALSE)
+#write.csv(single_ht_samples, "line_experiment2_single_ht_samples.csv", row.names = FALSE)
+#write.csv(multi_mse_samples, "line_experiment2_multi_mse_samples.csv", row.names = FALSE)
+#write.csv(multi_ht_samples, "line_experiment2_multi_ht_samples.csv", row.names = FALSE)
+```
+

@@ -1,0 +1,270 @@
+---
+title: "Парные сравнения методов шумоподавления"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+options(stringsAsFactors = FALSE, scipen = 999)
+```
+
+## Данные
+
+В этом файле собраны парные сравнения методов по тем же данным, которые
+используются в презентации. Пары образуются по одинаковым
+`config_id + rep`, то есть методы сравниваются на одних и тех же запусках.
+
+```{r load-data}
+csv_path <- file.path("line_experiment3_ht_error_samples.csv")
+stopifnot(file.exists(csv_path))
+
+raw_data <- read.csv(csv_path, check.names = FALSE)
+
+method_labels <- c(
+  cssa_row_row = "CSSA ROW-ROW",
+  bm3d = "BM3D",
+  median = "Median",
+  wiener = "Wiener",
+  quantile_09 = "Quantile 0.9"
+)
+
+config_labels <- c(
+  diag_pos_full = "Положительная диагональ",
+  diag_neg_full = "Отрицательная диагональ",
+  steep_full = "Крутая прямая",
+  steep_shifted = "Крутая смещённая"
+)
+
+metric_labels <- c(
+  dr = "Δρ",
+  dtheta = "Δθ"
+)
+
+raw_data$method_label <- unname(method_labels[raw_data$method])
+raw_data$config_label <- unname(config_labels[raw_data$config_id])
+
+head(raw_data)
+```
+
+## Вспомогательные функции
+
+```{r helpers}
+method_summary <- function(data, metric) {
+  means <- tapply(data[[metric]], data$method_label, mean)
+  medians <- tapply(data[[metric]], data$method_label, median)
+
+  out <- data.frame(
+    method = names(means),
+    mean = as.numeric(means),
+    median = as.numeric(medians),
+    row.names = NULL
+  )
+
+  out
+}
+
+select_top2 <- function(data, metric, primary = c("mean", "median")) {
+  primary <- match.arg(primary)
+  summary_tbl <- method_summary(data, metric)
+
+  if (primary == "mean") {
+    summary_tbl <- summary_tbl[order(summary_tbl$mean, summary_tbl$median, summary_tbl$method), ]
+  } else {
+    summary_tbl <- summary_tbl[order(summary_tbl$median, summary_tbl$mean, summary_tbl$method), ]
+  }
+
+  list(
+    methods = summary_tbl$method[1:2],
+    summary = summary_tbl
+  )
+}
+
+make_pairs <- function(data, metric, method_1, method_2) {
+  left <- data[data$method_label == method_1, c("config_id", "rep", metric)]
+  right <- data[data$method_label == method_2, c("config_id", "rep", metric)]
+
+  names(left)[3] <- "x"
+  names(right)[3] <- "y"
+
+  merge(left, right, by = c("config_id", "rep"), sort = FALSE)
+}
+
+safe_paired_test <- function(x, y, kind = c("t", "wilcox")) {
+  kind <- match.arg(kind)
+
+  if (length(x) != length(y)) {
+    stop("Векторы должны иметь одинаковую длину.")
+  }
+
+  if (all(x == y)) {
+    return(list(statistic = 0, p.value = 1))
+  }
+
+  if (kind == "t") {
+    test_obj <- t.test(x, y, paired = TRUE)
+  } else {
+    test_obj <- wilcox.test(x, y, paired = TRUE, exact = FALSE)
+  }
+
+  list(
+    statistic = unname(test_obj$statistic),
+    p.value = test_obj$p.value
+  )
+}
+
+format_p <- function(p) {
+  if (!is.finite(p)) {
+    return(NA_character_)
+  }
+
+  if (p < 1e-4) {
+    return(format(p, scientific = TRUE, digits = 2))
+  }
+
+  sprintf("%.4f", p)
+}
+
+better_method <- function(summary_tbl, method_1, method_2, primary = c("mean", "median")) {
+  primary <- match.arg(primary)
+
+  row_1 <- summary_tbl[summary_tbl$method == method_1, , drop = FALSE]
+  row_2 <- summary_tbl[summary_tbl$method == method_2, , drop = FALSE]
+
+  if (primary == "mean") {
+    if (row_1$mean < row_2$mean) return(method_1)
+    if (row_2$mean < row_1$mean) return(method_2)
+    if (row_1$median <= row_2$median) return(method_1)
+    return(method_2)
+  }
+
+  if (row_1$median < row_2$median) return(method_1)
+  if (row_2$median < row_1$median) return(method_2)
+  if (row_1$mean <= row_2$mean) return(method_1)
+  return(method_2)
+}
+
+paired_result <- function(data, metric, primary = c("mean", "median")) {
+  primary <- match.arg(primary)
+  top_info <- select_top2(data, metric, primary)
+  methods <- top_info$methods
+  summary_tbl <- top_info$summary
+  pairs <- make_pairs(data, metric, methods[1], methods[2])
+
+  kind <- if (primary == "mean") "t" else "wilcox"
+  test_label <- if (primary == "mean") "Paired t-test" else "Wilcoxon signed-rank"
+  test_obj <- safe_paired_test(pairs$x, pairs$y, kind)
+
+  data.frame(
+    metric = metric,
+    aggregation = if (primary == "mean") "Среднее" else "Медиана",
+    test = test_label,
+    method_1 = methods[1],
+    method_2 = methods[2],
+    p_value = test_obj$p.value,
+    p_value_fmt = format_p(test_obj$p.value),
+    preferred = better_method(summary_tbl, methods[1], methods[2], primary),
+    n_pairs = nrow(pairs),
+    row.names = NULL
+  )
+}
+```
+
+## Сводные таблицы ошибок
+
+```{r summary-tables}
+summary_dr <- method_summary(raw_data, "dr")
+summary_dtheta <- method_summary(raw_data, "dtheta")
+
+knitr::kable(summary_dr[order(summary_dr$mean, summary_dr$median), ], digits = 6,
+             caption = "Сводка по Δρ")
+
+knitr::kable(summary_dtheta[order(summary_dtheta$mean, summary_dtheta$median), ], digits = 6,
+             caption = "Сводка по Δθ")
+```
+
+## Общие парные тесты
+
+Для слайдов со средними значениями используется парный t-критерий.
+Для слайдов с медианами используется критерий Вилкоксона.
+
+```{r overall-tests}
+overall_tests <- do.call(
+  rbind,
+  list(
+    paired_result(raw_data, "dr", "mean"),
+    paired_result(raw_data, "dtheta", "mean"),
+    paired_result(raw_data, "dr", "median"),
+    paired_result(raw_data, "dtheta", "median")
+  )
+)
+
+overall_tests$metric <- metric_labels[overall_tests$metric]
+
+knitr::kable(
+  overall_tests[, c("metric", "aggregation", "test", "method_1", "method_2", "p_value_fmt", "preferred", "n_pairs")],
+  caption = "Общие парные сравнения лидирующих методов"
+)
+```
+
+## Парные тесты по конфигурациям
+
+```{r per-config-tests}
+config_ids <- names(config_labels)
+per_config_tests <- list()
+row_id <- 1L
+
+for (cfg in config_ids) {
+  cfg_data <- raw_data[raw_data$config_id == cfg, ]
+
+  for (metric in c("dr", "dtheta")) {
+    for (primary in c("mean", "median")) {
+      res <- paired_result(cfg_data, metric, primary)
+      res$config_id <- cfg
+      res$config <- config_labels[[cfg]]
+      per_config_tests[[row_id]] <- res
+      row_id <- row_id + 1L
+    }
+  }
+}
+
+per_config_tests <- do.call(rbind, per_config_tests)
+per_config_tests$metric <- metric_labels[per_config_tests$metric]
+
+knitr::kable(
+  per_config_tests[, c("config", "metric", "aggregation", "test", "method_1", "method_2", "p_value_fmt", "preferred", "n_pairs")],
+  caption = "Парные сравнения лидирующих методов по конфигурациям"
+)
+```
+
+## Разбивка по слайдам
+
+Этот блок повторяет структуру сравнительных слайдов презентации.
+
+```{r slide-oriented-results}
+slide_results <- per_config_tests
+slide_results$slide_group <- paste(slide_results$aggregation, slide_results$metric)
+
+slide_results <- slide_results[, c(
+  "slide_group", "config", "test", "method_1", "method_2",
+  "p_value_fmt", "preferred", "n_pairs"
+)]
+
+names(slide_results) <- c(
+  "Слайд / метрика", "Конфигурация", "Тест", "Метод 1", "Метод 2",
+  "p-value", "Предпочтительный метод", "Число пар"
+)
+
+knitr::kable(slide_results, caption = "Результаты в разрезе сравнительных слайдов")
+```
+
+## Примечание
+
+В этом файле лидирующие пары выбираются так же, как в презентации:
+
+- для таблиц со средними значениями методы сортируются по `(mean, median)`;
+- для таблиц с медианами методы сортируются по `(median, mean)`.
+
+Это позволяет корректно разрешать ситуации, когда несколько методов имеют
+одинаковое среднее или одинаковую медиану.
+
+

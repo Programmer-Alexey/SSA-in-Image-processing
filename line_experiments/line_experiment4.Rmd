@@ -1,0 +1,519 @@
+---
+title: "РћРґРЅР° РїСЂСЏРјР°СЏ: CSSA Рё РєР»Р°СЃСЃРёС‡РµСЃРєРёРµ С„РёР»СЊС‚СЂС‹"
+author: "Alex"
+date: "2026-03-13"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+
+Р”Р°РЅРЅС‹Р№ С„Р°Р№Р» РїРѕС‡С‚Рё РїРѕР»РЅРѕСЃС‚СЊСЋ РїРѕРІС‚РѕСЂСЏРµС‚ `line_experiment3.Rmd`, РЅРѕ СЃ РёР·РјРµРЅРµРЅРёРµРј С„СѓРЅРєС†РёРё `clip01`. РЇ СѓРІРµР»РёС‡РёР» РЅРёР¶РЅСЋСЋ РіСЂР°РЅРёС†Сѓ, РґРѕ РєРѕС‚РѕСЂРѕР№ РІСЃРµ РїРёРєСЃРµР»Рё Р·Р°РЅСѓР»СЏР»РёСЃСЊ.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  cache=TRUE
+)
+
+set.seed(1111)
+```
+
+```{r libraries, include=F}
+project_lib <- normalizePath("../.r-local-lib", winslash = "/", mustWork = FALSE)
+if (dir.exists(project_lib)) {
+  .libPaths(c(project_lib, .libPaths()))
+}
+
+required_pkgs <- c(
+  "Rcpp",
+  "Rssa",
+  "lattice",
+  "gridExtra",
+  "dplyr",
+  "imager",
+  "EBImage",
+  "reticulate"
+)
+
+missing_pkgs <- required_pkgs[
+  !vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_pkgs) > 0) {
+  stop("РћС‚СЃСѓС‚СЃС‚РІСѓСЋС‚ РїР°РєРµС‚С‹: ", paste(missing_pkgs, collapse = ", "))
+}
+
+source("../ssa-based methods/cssa-transform.r")
+source("../hough transform/hough_transform.r")
+
+library(reticulate)
+reticulate::py_install("bm3d")
+bm3d_available <- reticulate::py_module_available("bm3d")
+bm3d_lib <- if (bm3d_available) reticulate::import("bm3d") else NULL
+```
+
+## Р’СЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹Рµ С„СѓРЅРєС†РёРё
+```{r helpers, include=F}
+
+clip01 <- function(m) {
+  m <- as.matrix(m)
+  m[!is.finite(m)] <- 0
+  m[m < 0.1] <- 0
+  m[m > 0.99] <- 1
+  m
+}
+
+normalize_xtab <- function(tab) {
+  t(apply(tab, 1, function(x) {
+    row_min <- min(x, na.rm = TRUE)
+    if (!is.finite(row_min)) {
+      return(rep(NA_real_, length(x)))
+    }
+    if (row_min == 0) {
+      ifelse(x == 0, 1, Inf)
+    } else {
+      x / row_min
+    }
+  }))
+}
+
+make_line_image <- function(n_row, n_col, a, b, intensity = 1) {
+  matrix(0, nrow = n_row, ncol = n_col) |>
+    add.line(a = a, b = b, intensity = intensity)
+}
+
+binary_by_quantile <- function(m, q = 0.9, use_abs = FALSE) {
+  x <- as.matrix(m)
+  x[!is.finite(x)] <- 0
+  score <- if (use_abs) abs(x) else x
+  thr <- as.numeric(stats::quantile(score, probs = q, na.rm = TRUE))
+  out <- ifelse(score >= thr, clip01(x), 0)
+  clip01(out)
+}
+
+cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
+  cleaned <- switch(
+    method,
+    "col.col" = m |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re(),
+    "col.row" = m |> dft() |> cssa.col(num.line = num_of_lines) |> idft.row() |> Re(),
+    "row.col" = m |> dft() |> cssa.row(num.line = num_of_lines) |> idft.col() |> Re(),
+    "row.row" = m |> dft() |> cssa.row(num.line = num_of_lines) |> idft.row() |> Re(),
+    stop("РќРµРёР·РІРµСЃС‚РЅС‹Р№ CSSA-РјРµС‚РѕРґ: ", method)
+  )
+  clip01(cleaned)
+}
+
+bm3d_denoise <- function(m, sigma_noise) {
+  if (!bm3d_available) {
+    stop("Python-РјРѕРґСѓР»СЊ 'bm3d' РЅРµРґРѕСЃС‚СѓРїРµРЅ.")
+  }
+  x <- as.matrix(m)
+  x[!is.finite(x)] <- 0
+  clip01(bm3d_lib$bm3d(x, sigma_psd = as.numeric(sigma_noise)))
+}
+
+median_denoise <- function(m, n = 3L) {
+  clip01(as.matrix(imager::medianblur(imager::as.cimg(clip01(m)), n = as.integer(n))))
+}
+
+wiener_denoise <- function(m, ksize = 5L) {
+  x <- clip01(m)
+  ksize <- as.integer(ksize)
+  if (ksize %% 2L == 0L) {
+    ksize <- ksize + 1L
+  }
+
+  kernel <- matrix(1 / (ksize * ksize), nrow = ksize, ncol = ksize)
+  local_mean <- EBImage::filter2(x, kernel, boundary = "replicate")
+  local_var <- EBImage::filter2(x^2, kernel, boundary = "replicate") - local_mean^2
+  local_var[local_var < 0] <- 0
+  noise_var <- mean(local_var, na.rm = TRUE)
+
+  gain <- pmax(local_var - noise_var, 0) / pmax(local_var, 1e-8)
+  out <- local_mean + gain * (x - local_mean)
+  clip01(out)
+}
+
+quantile_denoise <- function(m, q = 0.9) {
+  x <- clip01(m)
+  thr <- as.numeric(stats::quantile(x, probs = q, na.rm = TRUE))
+  clip01(ifelse(x >= thr, x, 0))
+}
+
+convert_ab_to_rho_theta <- function(a, b) {
+  theta <- atan2(1, -a)
+  rho <- b / sqrt(a^2 + 1)
+  if (theta < 0) {
+    theta <- theta + pi
+    rho <- -rho
+  }
+  c(rho = rho, theta = theta)
+}
+
+find_k_max <- function(acc, k, qrho, qtheta, suppress = FALSE, window = 6L) {
+  acc_copy <- acc
+  maxima <- vector("list", k)
+
+  for (i in seq_len(k)) {
+    idx <- which(acc_copy == max(acc_copy), arr.ind = TRUE)[1, ]
+    maxima[[i]] <- c(rho = qrho[idx[1]], theta = qtheta[idx[2]])
+
+    if (suppress) {
+      r_range <- max(1, idx[1] - window):min(nrow(acc_copy), idx[1] + window)
+      c_range <- max(1, idx[2] - window):min(ncol(acc_copy), idx[2] + window)
+      acc_copy[r_range, c_range] <- 0
+    } else {
+      acc_copy[idx[1], idx[2]] <- 0
+    }
+  }
+
+  out <- do.call(rbind, maxima)
+  colnames(out) <- c("rho", "theta")
+  out
+}
+
+compute_err <- function(true, pred) {
+  true <- as.matrix(true)
+  pred <- as.matrix(pred)
+
+  if (ncol(true) != 2 || ncol(pred) != 2) {
+    stop("true Рё pred РґРѕР»Р¶РЅС‹ РёРјРµС‚СЊ РїРѕ РґРІР° СЃС‚РѕР»Р±С†Р°: rho Рё theta")
+  }
+
+  if (nrow(true) != nrow(pred)) {
+    stop("true Рё pred РґРѕР»Р¶РЅС‹ СЃРѕРґРµСЂР¶Р°С‚СЊ РѕРґРёРЅР°РєРѕРІРѕРµ С‡РёСЃР»Рѕ РїСЂСЏРјС‹С…")
+  }
+
+  pair_err <- function(tr, tt, pr, pt) {
+    pt_alt <- (pt + pi) %% (2 * pi)
+    dtheta <- atan2(sin(tt - pt), cos(tt - pt))^2
+    dtheta_alt <- atan2(sin(tt - pt_alt), cos(tt - pt_alt))^2
+
+    loss_1 <- (tr - pr)^2 + dtheta
+    loss_2 <- (tr + pr)^2 + dtheta_alt
+
+    if (loss_1 <= loss_2) {
+      c(dr = (tr - pr)^2, dtheta = dtheta, total = loss_1)
+    } else {
+      c(dr = (tr + pr)^2, dtheta = dtheta_alt, total = loss_2)
+    }
+  }
+
+  if (nrow(true) == 1) {
+    out <- pair_err(true[1, 1], true[1, 2], pred[1, 1], pred[1, 2])
+    return(c(dr = unname(out[1]), dtheta = unname(out[2])))
+  }
+
+  stop("Р’ СЌС‚РѕРј РѕС‚С‡С‘С‚Рµ РѕР¶РёРґР°РµС‚СЃСЏ С‚РѕР»СЊРєРѕ РѕРґРЅР° РїСЂСЏРјР°СЏ.")
+}
+
+```
+
+РџР°СЂР°РјРµС‚СЂС‹ СЌРєСЃРїРµСЂРёРјРµРЅС‚Р°. Р’ С‡Р°СЃС‚РЅРѕСЃС‚Рё, $\sigma=0.2$, 1 РїСЂСЏРјР°СЏ, РїР°СЂР°РјРµС‚СЂС‹ РґРёСЃРєСЂРµС‚РёР·Р°С†РёРё Р°РєРєСѓРјСѓР»СЏС‚РѕСЂРЅРѕРіРѕ РјР°СЃСЃРёРІР° Рё С‚Рї.
+```{r experiment-parameters}
+sigma_noise <- 0.4
+num_of_lines <- 1
+detector_q <- 0.9
+rho_step_ht <- 1
+theta_step_ht <- 0.01
+configs <- data.frame(
+  config_id = c(
+    "diag_pos_full",
+    "diag_neg_full",
+    "steep_full",
+    "steep_shifted"
+  ),
+  n_col = rep(100L, 4),
+  n_row = rep(100L, 4),
+  a = c(1, -1, 2, 2),
+  b = c(0, 101, -1, -40),
+  description = c(
+    "Positive full diagonal",
+    "Negative full diagonal",
+    "Steep line crossing most of the image",
+    "Steep shifted line with shorter visible segment"
+  ),
+  stringsAsFactors = FALSE
+)
+
+configs
+```
+
+Р’РѕС‚ С‚Р°Рє РІС‹РіР»СЏРґСЏС‚ СЌС‚Рё РїСЂСЏРјС‹Рµ.
+```{r configuration-preview}
+config_images <- lapply(seq_len(nrow(configs)), function(i) {
+  make_line_image(
+    n_row = configs$n_row[i],
+    n_col = configs$n_col[i],
+    a = configs$a[i],
+    b = configs$b[i]
+  )
+})
+
+config_labels <- sprintf(
+  "%s\n(a = %.2f, b = %.2f)",
+  configs$config_id,
+  configs$a,
+  configs$b
+)
+
+plot.matrix(
+  config_images,
+  from.0.to.1 = TRUE,
+  labels = config_labels,
+  nplots = 2
+)
+```
+
+## Р”Р°Р»РµРµ Р±СѓРґСѓС‚ РёРґС‚Рё СЂРµР·СѓР»СЊС‚Р°С‚С‹ СЂР°Р±РѕС‚С‹ СЂР°Р·РЅС‹С… РїСЂРµРґРѕР±СЂР°Р±РѕС‚РѕРє.
+
+
+`ROW-ROW`
+
+```{r demo-cssa-row-row, echo=FALSE}
+demo_matrix <- make_line_image(100, 100, a = 2, b = -1)
+demo_noisy <- add.noise(demo_matrix, sigma = sigma_noise)
+demo_cssa <- cssa_denoise(
+  demo_noisy,
+  num_of_lines = num_of_lines,
+  method = "row.row"
+)
+
+plot.matrix(
+  list(
+    "РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°" = clip01(demo_noisy),
+    "CSSA row.row" = demo_cssa
+  ),
+  from.0.to.1 = TRUE,
+  labels = c("РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°", "CSSA row.row"),
+  nplots = 2
+)
+
+```
+
+`BM3D`
+```{r demo-bm3d, echo=FALSE}
+if (bm3d_available) {
+  demo_bm3d <- bm3d_denoise(demo_noisy, sigma_noise = sigma_noise)
+
+  plot.matrix(
+    list(
+      "РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°" = clip01(demo_noisy),
+      "BM3D" = demo_bm3d
+    ),
+    from.0.to.1 = TRUE,
+    labels = c("РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°", "BM3D"),
+    nplots = 2
+  )
+} else {
+  cat("BM3D РїСЂРѕРїСѓС‰РµРЅ: Python-РјРѕРґСѓР»СЊ 'bm3d' РЅРµ РЅР°Р№РґРµРЅ РІ С‚РµРєСѓС‰РµРј РѕРєСЂСѓР¶РµРЅРёРё.\n")
+}
+```
+
+`РњРµРґРёР°РЅРЅС‹Р№ С„РёР»СЊС‚СЂ`.
+```{r demo-median, echo=FALSE}
+demo_median <- median_denoise(demo_noisy, n = 3L)
+
+plot.matrix(
+  list(
+    "РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°" = clip01(demo_noisy),
+    "Median" = demo_median
+  ),
+  from.0.to.1 = TRUE,
+  labels = c("РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°", "Median"),
+  nplots = 2
+)
+```
+
+`Р¤РёР»СЊС‚СЂ Р’РёРЅРµСЂР°`.
+```{r demo-wiener, echo=FALSE}
+demo_wiener <- wiener_denoise(demo_noisy, ksize = 5L)
+
+plot.matrix(
+  list(
+    "РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°" = clip01(demo_noisy),
+    "Wiener" = demo_wiener
+  ),
+  from.0.to.1 = TRUE,
+  labels = c("РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°", "Wiener"),
+  nplots = 2
+)
+```
+
+`РљРІР°РЅС‚РёР»СЊРЅС‹Р№ Р¤РёР»СЊС‚СЂ`.
+```{r demo-quantile, echo=FALSE}
+demo_quantile <- quantile_denoise(demo_noisy, q = detector_q)
+
+plot.matrix(
+  list(
+    "РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°" = clip01(demo_noisy),
+    "Quantile 0.9" = demo_quantile
+  ),
+  from.0.to.1 = TRUE,
+  labels = c("РЁСѓРјРЅР°СЏ РјР°С‚СЂРёС†Р°", "Quantile 0.9"),
+  nplots = 2
+)
+```
+
+```{r detector-list, include=F}
+detectors <- list(
+  cssa_row_row = function(m, sigma_noise) {
+    cssa_denoise(m, num_of_lines = num_of_lines, method = "row.row")
+  },
+  median = function(m, sigma_noise) {
+    median_denoise(m, n = 3L)
+  },
+  wiener = function(m, sigma_noise) {
+    wiener_denoise(m, ksize = 5L)
+  },
+  quantile_09 = function(m, sigma_noise) {
+    quantile_denoise(m, q = detector_q)
+  }
+)
+
+if (bm3d_available) {
+  detectors <- append(
+    detectors,
+    list(
+      bm3d = function(m, sigma_noise) {
+        bm3d_denoise(m, sigma_noise = sigma_noise)
+      }
+    ),
+    after = 1L
+  )
+}
+
+names(detectors)
+```
+
+## Р­РєСЃРїРµСЂРёРјРµРЅС‚
+```{r ht-experiment, echo=FALSE}
+n_rep <- 100
+
+results_list <- vector("list", length = nrow(configs) * n_rep * length(detectors))
+idx_out <- 1L
+
+for (cfg_i in seq_len(nrow(configs))) {
+  cfg <- configs[cfg_i, ]
+  base_matrix <- make_line_image(
+    n_row = cfg$n_row,
+    n_col = cfg$n_col,
+    a = cfg$a,
+    b = cfg$b
+  )
+  true_line <- matrix(convert_ab_to_rho_theta(cfg$a, cfg$b), nrow = 1)
+
+  for (rep_i in seq_len(n_rep)) {
+    noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
+
+    for (method_name in names(detectors)) {
+      processed_matrix <- clip01(detectors[[method_name]](
+        noisy_matrix,
+        sigma_noise = sigma_noise
+      ))
+
+      ht_result <- make_accumulator(
+        noisy_matrix,
+        detector = function(m) processed_matrix,
+        rho_step = rho_step_ht,
+        theta_step = theta_step_ht
+      )
+
+      pred_line <- find_k_max(
+        ht_result$accumulator,
+        k = num_of_lines,
+        qrho = ht_result$rho,
+        qtheta = ht_result$theta,
+        suppress = FALSE,
+        window = 0L
+      )
+
+      err <- compute_err(true_line, pred_line)
+
+      results_list[[idx_out]] <- data.frame(
+        config_id = cfg$config_id,
+        description = cfg$description,
+        n_col = cfg$n_col,
+        n_row = cfg$n_row,
+        a = cfg$a,
+        b = cfg$b,
+        sigma = sigma_noise,
+        rep = rep_i,
+        method = method_name,
+        true_rho = true_line[1, 1],
+        true_theta = true_line[1, 2],
+        pred_rho = pred_line[1, 1],
+        pred_theta = pred_line[1, 2],
+        active_pixels = sum(processed_matrix > 0),
+        dr = as.numeric(err["dr"]),
+        dtheta = as.numeric(err["dtheta"]),
+        stringsAsFactors = FALSE
+      )
+
+      idx_out <- idx_out + 1L
+    }
+  }
+}
+
+ht_error_samples <- do.call(rbind, results_list)
+head(ht_error_samples, 12)
+```
+РђРіСЂРµРіРёСЂРѕРІР°РЅРЅР°СЏ СЃРІРѕРґРєР° РїРѕ СЃСЂРµРґРЅРёРј Рё РјРµРґРёР°РЅР°Рј РѕС€РёР±РѕРє РҐР°С„Р°.
+```{r ht-summary}
+ht_error_summary <- ht_error_samples |>
+  dplyr::group_by(config_id, description, method) |>
+  dplyr::summarise(
+    mean_dr = mean(dr),
+    median_dr = median(dr),
+    mean_dtheta = mean(dtheta),
+    median_dtheta = median(dtheta),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(config_id, mean_dr, mean_dtheta)
+
+ht_error_summary
+```
+
+РўР°Р±Р»РёС†С‹ СЃСЂРµРґРЅРёС… Р·РЅР°С‡РµРЅРёР№ `dr` Рё РёС… РЅРѕСЂРјРёСЂРѕРІР°РЅРЅС‹Рµ РІРµСЂСЃРёРё.
+```{r xtabs-mean-dr}
+mean_dr_table <- xtabs(mean_dr ~ config_id + method, data = ht_error_summary)
+mean_dr_table
+
+mean_dr_table_norm <- normalize_xtab(mean_dr_table)
+mean_dr_table_norm
+```
+Р’РёРґРёРј, С‡С‚Рѕ РѕРіСЂРѕРјРЅС‹Рµ РѕС€РёР±РєРё `row.row` РёСЃС‡РµР·Р»Рё.
+
+
+РђРЅР°Р»РѕРіРёС‡РЅРѕ СЃ РјРµРґРёР°РЅР°РјРё
+```{r xtabs-median-dr}
+median_dr_table <- xtabs(median_dr ~ config_id + method, data = ht_error_summary)
+median_dr_table
+
+median_dr_table_norm <- normalize_xtab(median_dr_table)
+median_dr_table_norm
+```
+
+РџРѕ $\theta$
+```{r xtabs-mean-dtheta}
+mean_dtheta_table <- xtabs(mean_dtheta ~ config_id + method, data = ht_error_summary)
+mean_dtheta_table
+
+mean_dtheta_table_norm <- normalize_xtab(mean_dtheta_table)
+mean_dtheta_table_norm
+```
+
+РњРµРґРёР°РЅРЅС‹Рµ РѕС€РёР±РєРё РїРѕ $\theta$
+```{r xtabs-median-dtheta}
+median_dtheta_table <- xtabs(median_dtheta ~ config_id + method, data = ht_error_summary)
+median_dtheta_table
+
+median_dtheta_table_norm <- normalize_xtab(median_dtheta_table)
+median_dtheta_table_norm
+```
+

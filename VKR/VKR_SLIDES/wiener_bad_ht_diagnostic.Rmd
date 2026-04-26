@@ -1,0 +1,519 @@
+---
+title: "Диагностика плохой ошибки HT после фильтра Винера"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 5,
+  dpi = 140
+)
+
+set.seed(1111)
+```
+
+## Цель
+
+Этот файл воспроизводит случай, когда после фильтра Винера преобразование Хафа выбирает неправильный максимум аккумуляторного массива.
+
+Ключевая проверка: `make_accumulator()` считает активными все пиксели, для которых обработанная матрица больше нуля. Поэтому ниже отдельно выводится бинарная матрица
+\[
+E = \{(i,j): \widehat M_{ij} > 0\},
+\]
+то есть ровно тот вход, который фактически видит преобразование Хафа.
+
+## Подготовка
+
+```{r project-setup}
+find_project_root <- function(start_dir = getwd()) {
+  cur <- normalizePath(start_dir, winslash = "/", mustWork = FALSE)
+  for (i in 1:20) {
+    if (file.exists(file.path(cur, "SSA-in-Image-processing.Rproj"))) {
+      return(cur)
+    }
+    next_dir <- dirname(cur)
+    if (identical(next_dir, cur)) {
+      break
+    }
+    cur <- next_dir
+  }
+  stop("Не удалось найти корень проекта.")
+}
+
+project_root <- find_project_root()
+setwd(project_root)
+
+required_pkgs <- c("lattice", "gridExtra", "EBImage")
+missing_pkgs <- required_pkgs[
+  !vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)
+]
+if (length(missing_pkgs) > 0) {
+  stop("Отсутствуют пакеты: ", paste(missing_pkgs, collapse = ", "))
+}
+```
+
+## Вспомогательные функции
+
+```{r helpers}
+clip01 <- function(m) {
+  m <- as.matrix(m)
+  m[!is.finite(m)] <- 0
+  m[m < 0.001] <- 0
+  m[m > 0.99] <- 1
+  m
+}
+
+`%||%` <- function(x, y) {
+  if (is.null(x)) y else x
+}
+
+add.line <- function(m, a = 1, b = 0, intensity = 1) {
+  n_row <- nrow(m)
+  n_col <- ncol(m)
+
+  x0 <- 1L
+  y0 <- round(a * x0 + b)
+  x1 <- n_col
+  y1 <- round(a * x1 + b)
+
+  dx <- abs(x1 - x0)
+  dy <- abs(y1 - y0)
+  sx <- if (x0 < x1) 1L else -1L
+  sy <- if (y0 < y1) 1L else -1L
+  err <- dx - dy
+
+  repeat {
+    if (x0 >= 1L && x0 <= n_col && y0 >= 1L && y0 <= n_row) {
+      m[y0, x0] <- intensity
+    }
+    if (x0 == x1 && y0 == y1) {
+      break
+    }
+
+    e2 <- 2L * err
+    if (e2 > -dy) {
+      err <- err - dy
+      x0 <- x0 + sx
+    }
+    if (e2 < dx) {
+      err <- err + dx
+      y0 <- y0 + sy
+    }
+  }
+
+  m
+}
+
+add.noise <- function(m, sigma = 0.2) {
+  m + rnorm(nrow(m) * ncol(m), sd = sigma)
+}
+
+plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL) {
+  rgb.palette <- grDevices::colorRampPalette(c("white", "black"), space = "rgb")
+
+  as_plot_matrix <- function(x) {
+    x <- as.matrix(x)
+    if (is.complex(x)) {
+      x <- Re(x)
+    }
+    x
+  }
+
+  if (!is.list(m)) {
+    mat <- t(as_plot_matrix(m))
+    if (from.0.to.1) {
+      mat[mat < 0] <- 0
+      mat[mat > 1] <- 1
+    }
+    return(lattice::levelplot(
+      mat,
+      xlab = "",
+      ylab = "",
+      col.regions = rgb.palette,
+      scales = list(draw = FALSE),
+      auto.key = FALSE,
+      at = if (from.0.to.1) seq(0, 1, 0.01) else NULL,
+      colorkey = FALSE,
+      col = "transparent",
+      border = NA,
+      cuts = 255
+    ))
+  }
+
+  plots <- vector("list", length(m))
+  for (i in seq_along(m)) {
+    mat <- t(as_plot_matrix(m[[i]]))
+    if (from.0.to.1) {
+      mat[mat < 0] <- 0
+      mat[mat > 1] <- 1
+    }
+
+    plots[[i]] <- lattice::levelplot(
+      mat,
+      xlab = "",
+      ylab = "",
+      col.regions = rgb.palette,
+      scales = list(draw = FALSE),
+      auto.key = FALSE,
+      at = if (from.0.to.1) seq(0, 1, 0.01) else NULL,
+      main = if (!is.null(labels)) labels[i] else " ",
+      colorkey = FALSE,
+      col = "transparent",
+      border = NA,
+      cuts = 255
+    )
+  }
+
+  do.call(gridExtra::grid.arrange, c(plots, ncol = nplots %||% length(plots)))
+}
+
+threshold_matrix <- function(m, threshold = 0.1) {
+  out <- clip01(m)
+  out[out < threshold] <- 0
+  out
+}
+
+make_line_image <- function(n_row, n_col, a, b, intensity = 1) {
+  matrix(0, nrow = n_row, ncol = n_col) |>
+    add.line(a = a, b = b, intensity = intensity)
+}
+
+make_accumulator <- function(matrix, detector, rho_step = 1, theta_step = 0.01) {
+  bound_matrix <- detector(matrix)
+  bound_matrix <- as.matrix(bound_matrix)
+
+  n_row <- nrow(bound_matrix)
+  n_col <- ncol(bound_matrix)
+  points <- which(bound_matrix > 0, arr.ind = TRUE)
+
+  n_theta <- floor(pi / theta_step) + 1L
+  theta <- seq.int(0L, n_theta - 1L) * theta_step
+
+  rho_max <- ceiling(sqrt(n_row * n_row + n_col * n_col))
+  n_rho <- floor((2 * rho_max) / rho_step) + 1L
+  rho <- -rho_max + seq.int(0L, n_rho - 1L) * rho_step
+
+  accumulator <- matrix(0L, nrow = n_rho, ncol = n_theta)
+  if (nrow(points) == 0L) {
+    return(list(accumulator = accumulator, rho = rho, theta = theta))
+  }
+
+  x <- points[, "col"]
+  y <- points[, "row"]
+
+  for (j in seq_along(theta)) {
+    rho_values <- x * cos(theta[j]) + y * sin(theta[j])
+    rho_idx <- round((rho_values - rho[1]) / rho_step) + 1L
+    rho_idx <- rho_idx[rho_idx >= 1L & rho_idx <= n_rho]
+    accumulator[, j] <- tabulate(rho_idx, nbins = n_rho)
+  }
+
+  list(accumulator = accumulator, rho = rho, theta = theta)
+}
+
+wiener_denoise <- function(m, ksize = 5L, clip_input = TRUE) {
+  x <- if (clip_input) {
+    clip01(m)
+  } else {
+    as.matrix(m)
+  }
+  ksize <- as.integer(ksize)
+  if (ksize %% 2L == 0L) {
+    ksize <- ksize + 1L
+  }
+
+  kernel <- matrix(1 / (ksize * ksize), nrow = ksize, ncol = ksize)
+  local_mean <- EBImage::filter2(x, kernel, boundary = "replicate")
+  local_var <- EBImage::filter2(x^2, kernel, boundary = "replicate") - local_mean^2
+  local_var[local_var < 0] <- 0
+  noise_var <- mean(local_var, na.rm = TRUE)
+
+  gain <- pmax(local_var - noise_var, 0) / pmax(local_var, 1e-8)
+  clip01(local_mean + gain * (x - local_mean))
+}
+
+convert_ab_to_rho_theta <- function(a, b) {
+  theta <- atan2(1, -a)
+  rho <- b / sqrt(a^2 + 1)
+  if (theta < 0) {
+    theta <- theta + pi
+    rho <- -rho
+  }
+  c(rho = rho, theta = theta)
+}
+
+find_k_max <- function(acc, k, qrho, qtheta) {
+  acc_copy <- acc
+  maxima <- vector("list", k)
+
+  for (i in seq_len(k)) {
+    idx <- which(acc_copy == max(acc_copy), arr.ind = TRUE)[1, ]
+    maxima[[i]] <- data.frame(
+      rho = qrho[idx[1]],
+      theta = qtheta[idx[2]],
+      accumulator_value = acc_copy[idx[1], idx[2]],
+      rho_idx = idx[1],
+      theta_idx = idx[2]
+    )
+    acc_copy[idx[1], idx[2]] <- 0
+  }
+
+  do.call(rbind, maxima)
+}
+
+compute_err <- function(true, pred) {
+  true <- as.matrix(true)
+  pred <- as.matrix(pred)
+
+  pair_err <- function(tr, tt, pr, pt) {
+    pt_alt <- (pt + pi) %% (2 * pi)
+    dtheta <- atan2(sin(tt - pt), cos(tt - pt))^2
+    dtheta_alt <- atan2(sin(tt - pt_alt), cos(tt - pt_alt))^2
+
+    loss_1 <- (tr - pr)^2 + dtheta
+    loss_2 <- (tr + pr)^2 + dtheta_alt
+
+    if (loss_1 <= loss_2) {
+      c(dr = (tr - pr)^2, dtheta = dtheta, total = loss_1)
+    } else {
+      c(dr = (tr + pr)^2, dtheta = dtheta_alt, total = loss_2)
+    }
+  }
+
+  out <- pair_err(true[1, 1], true[1, 2], pred[1, 1], pred[1, 2])
+  c(dr = unname(out[1]), dtheta = unname(out[2]))
+}
+
+plot_matrix_panel <- function(mats, labels, nplots = length(mats), from.0.to.1 = TRUE) {
+  plot.matrix(
+    mats,
+    from.0.to.1 = from.0.to.1,
+    labels = labels,
+    nplots = nplots
+  )
+}
+
+plot_accumulator <- function(ht_result, true_line, pred_line, main) {
+  plot.matrix(
+    list(ht_result$accumulator),
+    labels = main,
+    nplots = 1
+  )
+
+  data.frame(
+    point = c("истинные параметры", "выбранный максимум"),
+    rho = c(true_line[1, "rho"], pred_line$rho[1]),
+    theta = c(true_line[1, "theta"], pred_line$theta[1])
+  )
+}
+```
+
+## Параметры плохого случая
+
+Берём конфигурацию отрицательной диагонали. Именно для неё в таблицах у фильтра Винера возникает ошибка по \(\rho\) порядка \(5100\).
+
+Параметр `clip_before_wiener = TRUE` воспроизводит плохой режим: перед фильтром Винера шумная матрица приводится к неотрицательному виду через `clip01()`. Из-за этого после локального усреднения почти все пиксели становятся положительными и попадают в голосование преобразования Хафа.
+
+```{r case-parameters}
+cfg <- data.frame(
+  config_id = "diag_neg_full",
+  description = "Отрицательная диагональ",
+  n_row = 100L,
+  n_col = 100L,
+  a = -1,
+  b = 101
+)
+
+sigma_noise <- 0.2
+rho_step_ht <- 1
+theta_step_ht <- 0.01
+bad_dr_threshold <- 1000
+max_tries <- 5L
+clip_before_wiener <- TRUE
+
+true_params <- convert_ab_to_rho_theta(cfg$a, cfg$b)
+true_line <- matrix(true_params, nrow = 1)
+colnames(true_line) <- names(true_params)
+true_line
+```
+
+## Поиск реализации с большой ошибкой
+
+```{r find-bad-case}
+run_wiener_case <- function(rep_id, threshold = NULL, clip_input = clip_before_wiener) {
+  set.seed(1111 + rep_id)
+
+  clean_matrix <- make_line_image(
+    n_row = cfg$n_row,
+    n_col = cfg$n_col,
+    a = cfg$a,
+    b = cfg$b
+  )
+
+  noisy_matrix <- add.noise(clean_matrix, sigma = sigma_noise)
+  processed_matrix <- wiener_denoise(noisy_matrix, ksize = 5L, clip_input = clip_input)
+
+  if (!is.null(threshold)) {
+    processed_for_ht <- threshold_matrix(processed_matrix, threshold = threshold)
+  } else {
+    processed_for_ht <- processed_matrix
+  }
+
+  binary_for_ht <- 1 * (processed_for_ht > 0)
+
+  ht_result <- make_accumulator(
+    noisy_matrix,
+    detector = function(m) processed_for_ht,
+    rho_step = rho_step_ht,
+    theta_step = theta_step_ht
+  )
+
+  pred_line <- find_k_max(
+    acc = ht_result$accumulator,
+    k = 1L,
+    qrho = ht_result$rho,
+    qtheta = ht_result$theta
+  )
+
+  err <- compute_err(
+    true = true_line,
+    pred = as.matrix(pred_line[, c("rho", "theta")])
+  )
+
+  summary <- data.frame(
+    rep = rep_id,
+    clip_input = clip_input,
+    threshold = ifelse(is.null(threshold), NA_real_, threshold),
+    true_rho = true_line[1, "rho"],
+    true_theta = true_line[1, "theta"],
+    pred_rho = pred_line$rho[1],
+    pred_theta = pred_line$theta[1],
+    accumulator_value = pred_line$accumulator_value[1],
+    active_pixels = sum(binary_for_ht > 0),
+    min_processed = min(processed_matrix),
+    max_processed = max(processed_matrix),
+    dr = as.numeric(err["dr"]),
+    dtheta = as.numeric(err["dtheta"])
+  )
+
+  list(
+    clean_matrix = clean_matrix,
+    noisy_matrix = noisy_matrix,
+    processed_matrix = processed_matrix,
+    processed_for_ht = processed_for_ht,
+    binary_for_ht = binary_for_ht,
+    ht_result = ht_result,
+    pred_line = pred_line,
+    summary = summary
+  )
+}
+
+cases <- lapply(seq_len(max_tries), run_wiener_case)
+case_summary <- do.call(rbind, lapply(cases, `[[`, "summary"))
+
+bad_idx <- which(case_summary$dr > bad_dr_threshold)[1]
+if (is.na(bad_idx)) {
+  bad_idx <- which.max(case_summary$dr)
+}
+
+bad_case <- cases[[bad_idx]]
+
+case_summary[order(-case_summary$dr), ][1:min(10, nrow(case_summary)), ]
+bad_case$summary
+```
+
+## Что видит преобразование Хафа
+
+Слева показана исходная чистая прямая. Далее идёт результат фильтра Винера и бинаризация `>0`, которая соответствует реальному входу в `make_accumulator()`.
+
+```{r wiener-images, fig.width=10, fig.height=3.4}
+plot_matrix_panel(
+  list(
+    bad_case$clean_matrix,
+    bad_case$processed_matrix,
+    bad_case$binary_for_ht
+  ),
+  labels = c(
+    "Истинная прямая",
+    "После Wiener",
+    "Бинарный вход HT: > 0"
+  ),
+  nplots = 3
+)
+```
+
+Количество активных пикселей:
+
+```{r active-pixels}
+data.frame(
+  total_pixels = cfg$n_row * cfg$n_col,
+  active_after_wiener_gt_0 = sum(bad_case$processed_matrix > 0),
+  active_after_wiener_ge_01 = sum(bad_case$processed_matrix >= 0.1),
+  share_gt_0 = mean(bad_case$processed_matrix > 0),
+  share_ge_01 = mean(bad_case$processed_matrix >= 0.1)
+)
+```
+
+## Аккумуляторный массив
+
+Синий маркер --- истинные параметры прямой, красный крест --- максимум, выбранный преобразованием Хафа.
+
+```{r accumulator-bad, fig.width=7.5, fig.height=5}
+plot_accumulator(
+  ht_result = bad_case$ht_result,
+  true_line = true_line,
+  pred_line = bad_case$pred_line,
+  main = "Аккумулятор после Wiener без дополнительного порога"
+)
+```
+
+## Контроль: тот же случай с порогом 0.1
+
+Этот блок показывает, что проблема связана не только с самим фильтром Винера, а с тем, что после него почти все маленькие положительные остатки попадают в активное множество HT.
+
+```{r threshold-control}
+threshold_case <- run_wiener_case(rep_id = bad_case$summary$rep, threshold = 0.1)
+
+rbind(
+  without_threshold = bad_case$summary,
+  threshold_01 = threshold_case$summary
+)
+```
+
+```{r threshold-images, fig.width=10, fig.height=3.4}
+plot_matrix_panel(
+  list(
+    bad_case$binary_for_ht,
+    threshold_case$processed_for_ht,
+    threshold_case$binary_for_ht
+  ),
+  labels = c(
+    "HT вход без порога",
+    "Wiener после порога 0.1",
+    "HT вход после порога"
+  ),
+  nplots = 3
+)
+```
+
+```{r accumulator-threshold, fig.width=7.5, fig.height=5}
+plot_accumulator(
+  ht_result = threshold_case$ht_result,
+  true_line = true_line,
+  pred_line = threshold_case$pred_line,
+  main = "Аккумулятор после Wiener и порога 0.1"
+)
+```
+
+## Вывод
+
+Если в первом аккумуляторе максимум уходит к чужим параметрам, а после порога `0.1` возвращается к истинной прямой, значит большая ошибка вызвана тем, что преобразование Хафа голосует по множеству `processed_matrix > 0`.
+
+Для фильтра Винера это особенно критично: визуально изображение может выглядеть сглаженным, но формально почти вся матрица остаётся положительной и участвует в голосовании.

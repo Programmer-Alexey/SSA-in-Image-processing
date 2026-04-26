@@ -1,0 +1,21 @@
+"config_id","description","method","mean_dr","median_dr","mean_dtheta","median_dtheta"
+"diag_neg_full","Negative full diagonal","quantile_09",0.1745442225354,0.1745442225354,2.22121249499505e-05,2.11769001165851e-05
+"diag_neg_full","Negative full diagonal","cssa_row_row",0.207430262598882,0.1745442225354,5.59640438987229e-05,2.11769001165851e-05
+"diag_neg_full","Negative full diagonal","median",0.22222898062745,0.1745442225354,3.19640438987228e-05,2.11769001165851e-05
+"diag_neg_full","Negative full diagonal","bm3d",49.5619265584338,0.338974422852812,0.0247089027258647,2.91401680655501e-05
+"diag_neg_full","Negative full diagonal","wiener",5100.5,5100.5,2.45546022052234,2.45546022052234
+"diag_pos_full","Positive full diagonal","cssa_row_row",0,0,1.44819048961587e-05,1.44819048961587e-05
+"diag_pos_full","Positive full diagonal","median",0,0,1.44819048961587e-05,1.44819048961587e-05
+"diag_pos_full","Positive full diagonal","quantile_09",0,0,1.44819048961587e-05,1.44819048961587e-05
+"diag_pos_full","Positive full diagonal","wiener",0,0,1.44819048961587e-05,1.44819048961587e-05
+"diag_pos_full","Positive full diagonal","bm3d",49.76,0,0.0322748149563527,1.44819048961587e-05
+"steep_full","Steep line crossing most of the image","quantile_09",0.2,0.2,6.31237335209922e-05,6.31237335209922e-05
+"steep_full","Steep line crossing most of the image","wiener",0.2,0.2,0.101089051378693,0.101089051378693
+"steep_full","Steep line crossing most of the image","cssa_row_row",0.217947377530014,0.2,7.70974303158804e-05,6.31237335209922e-05
+"steep_full","Steep line crossing most of the image","median",0.539179606750063,0.305572809000084,0.00204839851057606,4.2228417412524e-06
+"steep_full","Steep line crossing most of the image","bm3d",264.0656349214,0.2,0.183435069366388,6.31237335209922e-05
+"steep_shifted","Steep shifted line with shorter visible segment","cssa_row_row",0.0124224800605672,0.0124224800605672,4.2228417412524e-06,4.2228417412524e-06
+"steep_shifted","Steep shifted line with shorter visible segment","quantile_09",0.0124224800605672,0.0124224800605672,4.2228417412524e-06,4.2228417412524e-06
+"steep_shifted","Steep shifted line with shorter visible segment","median",1.94898562606006,0.0124224800605672,0.0791708982986011,4.2228417412524e-06
+"steep_shifted","Steep shifted line with shorter visible segment","bm3d",38.0161077836623,0.0124224800605672,0.0253890835485156,4.2228417412524e-06
+"steep_shifted","Steep shifted line with shorter visible segment","wiener",319.3244582472,320,0.101089051378693,0.101089051378693

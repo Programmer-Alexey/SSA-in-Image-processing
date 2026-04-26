@@ -1,0 +1,231 @@
+---
+title: "Частотная ошибка для единичного орта"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 4.8
+)
+
+set.seed(1111)
+```
+
+## Идея
+
+Рассматривается строка вида
+\[
+x = e_j + \varepsilon,
+\]
+где \(e_j\) --- единичный орт, а \(\varepsilon\) --- белый гауссовский шум. После преобразования Фурье получаем комплексный экспоненциальный ряд, соответствующий частоте
+\[
+\omega_j = \frac{2\pi(j-1)}{N},
+\]
+и комплексный гауссовский шум. Ниже для каждого \(j = 1,\ldots,N\) оценивается, насколько CSSA row rank 1 после обратного преобразования локализует максимум в исходном индексе.
+
+## Подготовка
+
+```{r libraries}
+required_pkgs <- c("Rssa", "lattice", "gridExtra")
+missing_pkgs <- required_pkgs[
+  !vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)
+]
+if (length(missing_pkgs) > 0) {
+  stop("Отсутствуют пакеты: ", paste(missing_pkgs, collapse = ", "))
+}
+
+#source(file.path("ssa-based methods", "cssa-transform.r"))
+```
+
+## Параметры
+
+Параметр `n_rep` отвечает за размер выборки. По умолчанию `n_rep = 1`, то есть для каждого индекса \(j\) строится одна реализация шума.
+
+```{r parameters}
+N <- 100L
+sigma_noise <- 0.5
+n_rep <- 100L
+seed <- 1111L
+```
+
+## Функции
+
+```{r helpers}
+make_unit_row <- function(n, signal_index, intensity = 1) {
+  x <- numeric(n)
+  x[signal_index] <- intensity
+  x
+}
+
+cssa_rank1_row <- function(row_vec) {
+  row_vec |>
+    matrix(nrow = 1L) |>
+    dft() |>
+    cssa.row(num.line = 1L) |>
+    idft.row() |>
+    Re() |>
+    as.numeric()
+}
+
+row_metrics <- function(est, signal_index) {
+  truth <- make_unit_row(length(est), signal_index)
+  est_pos <- pmax(est, 0)
+  pos_sum <- sum(est_pos)
+  near_idx <- max(1L, signal_index - 1L):min(length(est), signal_index + 1L)
+
+  data.frame(
+    pred_index = which.max(est),
+    argmax_error = abs(which.max(est) - signal_index),
+    mse = mean((est - truth)^2),
+    near_mass_share = if (pos_sum > 0) sum(est_pos[near_idx]) / pos_sum else NA_real_,
+    active_share_0001 = mean(est > 0.001),
+    active_share_01 = mean(est > 0.1),
+    max_value = max(est),
+    true_index_value = est[signal_index],
+    stringsAsFactors = FALSE
+  )
+}
+
+run_unit_frequency_experiment <- function(n = 100L, n_rep = 1L, sigma = 0.2, seed = 1111L) {
+  rows <- vector("list", n * n_rep)
+  out_i <- 1L
+
+  set.seed(seed)
+  for (rep_i in seq_len(n_rep)) {
+    noise_vec <- rnorm(n, sd = sigma)
+
+    for (signal_index in seq_len(n)) {
+      clean <- make_unit_row(n, signal_index)
+      noisy <- clean + noise_vec
+      est <- cssa_rank1_row(noisy)
+
+      omega <- 2 * pi * (signal_index - 1L) / n
+      omega_wrapped <- atan2(sin(omega), cos(omega))
+
+      rows[[out_i]] <- data.frame(
+        rep = rep_i,
+        signal_index = signal_index,
+        omega = omega,
+        omega_wrapped = omega_wrapped,
+        row_metrics(est, signal_index),
+        stringsAsFactors = FALSE
+      )
+      out_i <- out_i + 1L
+    }
+  }
+
+  do.call(rbind, rows)
+}
+
+summarise_by_frequency <- function(samples) {
+  out <- aggregate(
+    cbind(
+      pred_index,
+      argmax_error,
+      mse,
+      near_mass_share,
+      active_share_0001,
+      active_share_01,
+      max_value,
+      true_index_value
+    ) ~ signal_index + omega + omega_wrapped,
+    data = samples,
+    FUN = mean
+  )
+  out[order(out$signal_index), ]
+}
+```
+
+## Расчет
+
+```{r run-experiment}
+samples <- run_unit_frequency_experiment(
+  n = N,
+  n_rep = n_rep,
+  sigma = sigma_noise,
+  seed = seed
+)
+
+frequency_summary <- summarise_by_frequency(samples)
+
+head(samples, 10)
+head(frequency_summary, 10)
+```
+
+## График ошибки от частоты
+
+```{r plot-error-by-frequency}
+plot(
+  frequency_summary$omega,
+  frequency_summary$argmax_error,
+  type = "b",
+  pch = 19,
+  col = "#1f4e79",
+  xlab = expression(omega[j] == 2*pi*(j-1)/N),
+  ylab = expression(abs(hat(j) - j)),
+  main = "Ошибка локализации максимума от частоты"
+)
+grid(col = "gray85")
+abline(
+  stats::lm(argmax_error ~ omega, data = frequency_summary),
+  col = "red",
+  lwd = 2
+)
+```
+
+## Дополнительные метрики
+
+```{r plot-extra-metrics, fig.height=7}
+old_par <- par(mfrow = c(3, 1), mar = c(4, 4, 2.2, 1))
+
+plot(
+  frequency_summary$omega,
+  frequency_summary$mse,
+  type = "b",
+  pch = 19,
+  col = "#2a6f37",
+  xlab = expression(omega[j]),
+  ylab = "MSE",
+  main = "MSE восстановления"
+)
+grid(col = "gray85")
+
+plot(
+  frequency_summary$omega,
+  frequency_summary$near_mass_share,
+  type = "b",
+  pch = 19,
+  col = "#7b3f00",
+  xlab = expression(omega[j]),
+  ylab = "Доля массы",
+  main = "Доля положительной массы в окрестности j±1"
+)
+grid(col = "gray85")
+
+plot(
+  frequency_summary$omega,
+  frequency_summary$active_share_0001,
+  type = "b",
+  pch = 19,
+  col = "#6b3fa0",
+  xlab = expression(omega[j]),
+  ylab = "Доля активных",
+  main = expression(hat(x) > 10^{-3})
+)
+grid(col = "gray85")
+
+par(old_par)
+```
+
+## Таблица с наибольшими ошибками
+
+```{r print-largest-errors}
+frequency_summary[order(-frequency_summary$argmax_error), ][1:10, ]
+```
