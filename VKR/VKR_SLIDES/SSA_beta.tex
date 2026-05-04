@@ -208,17 +208,17 @@
 
 \begin{frame}{Пример аккумуляторного массива}
 	\begin{columns}[c]
-		\begin{column}{0.32\textwidth}
+		\begin{column}{0.38\textwidth}
 			\centering
 			\scriptsize Восстановленные прямые
 			\par\vspace{0.08cm}
-			\includegraphics[width=\textwidth,height=0.7\textheight,keepaspectratio]{images/accumulator_recovered_lines.pdf}
+			\includegraphics[height=0.55\textheight,keepaspectratio]{images/accumulator_recovered_lines.pdf}
 		\end{column}
-		\begin{column}{0.65\textwidth}
+		\begin{column}{0.58\textwidth}
 			\centering
 			\scriptsize Аккумуляторный массив
 			\par\vspace{0.08cm}
-			\includegraphics[width=\textwidth,height=0.5\textheight,keepaspectratio,trim=125 15 125 15,clip]{images/ACCUMULATOR_pic_contrast.png}
+			\includegraphics[height=0.5\textheight,keepaspectratio]{images/ACCUMULATOR_pic_contrast.png}
 		\end{column}
 	\end{columns}
 
@@ -353,8 +353,7 @@
 
 \begin{frame}{CSSA ROW-ROW: схема алгоритма}
 	\small
-	\textbf{Входные данные:} матрица изображения $\mathbf{M}\in\mathbb{R}^{m\times n}$
-	и параметры $\operatorname{CSSA}(L,r)$, где $r$ --- число сохраняемых компонент.
+	\textbf{Входные данные:} матрица изображения, $L$ --- размер окна, $r$ --- число сохраняемых компонент.
 
 	\textbf{Выходные данные:} оценка изображения $\widehat{\mathbf{S}}\in\mathbb{R}^{m\times n}$.
 
@@ -383,7 +382,7 @@
 	\]
 
 	\begin{block}{Связь с CSSA}
-		Траекторная матрица такой экспоненты представляется как внешнее произведение:
+		Траекторная матрица такой экспоненты представляется как произведение:
 		\[
 		\mathbf{Z}_{ab} = \exp(i\omega_j(a+b-2)) = u_a v_b,
 		\]
@@ -632,31 +631,63 @@
 	\end{itemize}
 \end{frame}
 
-\begin{frame}{Шум $\sigma=0.05$: влияние сетки}
+\begin{frame}{Влияние дискретизации: без шума}
 	\scriptsize
 	\centering
-	\textbf{Средняя ошибка по $\rho$ при разных шагах $(\Delta\rho;\Delta\theta)$}
+	\textbf{Среднее расстояние восстановленной прямой до истинной}
 	\par\vspace{0.06cm}
 	{
 	\renewcommand{\arraystretch}{0.9}
 	\setlength{\tabcolsep}{2pt}
-	\resizebox{0.82\textwidth}{!}{\input{tables/grid_step_mean_rho_mse_sigma_005.tex}}
+	\resizebox{\textwidth}{!}{\input{tables/ideal_grid_step_by_config.tex}}
 	}
 
-	\vspace{0.18cm}
-	\textbf{Средняя ошибка по $\theta$ при разных шагах $(\Delta\rho;\Delta\theta)$}
-	\par\vspace{0.06cm}
+	\vspace{0.14cm}
+	\textbf{Среднее по четырем конфигурациям}
+	\par\vspace{0.05cm}
 	{
 	\renewcommand{\arraystretch}{0.9}
-	\setlength{\tabcolsep}{2pt}
-	\resizebox{0.82\textwidth}{!}{\input{tables/grid_step_mean_theta_mse_sigma_005.tex}}
+	\setlength{\tabcolsep}{4pt}
+	\resizebox{0.62\textwidth}{!}{\input{tables/ideal_grid_step_mean_distance.tex}}
 	}
 
 	\vspace{0.12cm}
 	\begin{itemize}
 		\setlength{\itemsep}{0pt}
-		\item Расчет выполнен при $\sigma=0.05$ по $25$ повторам на конфигурацию.
-		\item Не все методы улучшают свои показатели при уменьшении шума.
+		\item На вход преобразования Хафа подается чистое изображение без шума и без предобработки.
+		\item Остается только ошибка дискретизации пространства $(\rho,\theta)$.
+		\item При уменьшении шагов сетки средняя геометрическая ошибка падает.
+	\end{itemize}
+\end{frame}
+
+\begin{frame}{Нижняя граница ошибок параметров}
+	\scriptsize
+	\centering
+	\textbf{Сетка $(\Delta\rho;\Delta\theta)=(1;0.01)$, без шума и без предобработки}
+
+	\vspace{0.08cm}
+	\textbf{Минимально достижимая ошибка по $\rho$}
+	\par\vspace{0.04cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/ideal_default_grid_rho_mse.tex}}
+	}
+
+	\vspace{0.14cm}
+	\textbf{Минимально достижимая ошибка по $\theta$}
+	\par\vspace{0.04cm}
+	{
+	\renewcommand{\arraystretch}{0.9}
+	\setlength{\tabcolsep}{2pt}
+	\resizebox{\textwidth}{!}{\input{tables/ideal_default_grid_theta_mse.tex}}
+	}
+
+	\vspace{0.12cm}
+	\begin{itemize}
+		\setlength{\itemsep}{0pt}
+		\item Дальнейшие таблицы по методам нужно сравнивать с этой нижней границей.
+		\item Нулевое значение в таблицах означает попадание в ту же ячейку сетки, а не отсутствие влияния шума.
 	\end{itemize}
 \end{frame}
 
@@ -783,7 +814,7 @@
 	\scriptsize
 	\begin{itemize}
 		\setlength{\itemsep}{0pt}
-		\item $j$ --- индекс пикселя исходного сигнала в строке, $\omega_j=-2\pi(j-1)/100$.
+		\item $j$ --- индекс пикселя исходного сигнала в строке, $\omega_j=2\pi(j-1)/100$.
 		\item На низких частотах ошибка локализации максимума заметно выше; ближе к середине частотного диапазона она уменьшается.
 	\end{itemize}
 \end{frame}

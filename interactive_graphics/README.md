@@ -1,5 +1,36 @@
 # Interactive Graphics
 
+## Установка пакетов
+
+Скопируйте и выполните в R/RStudio:
+
+```r
+install.packages(c(
+  "shiny",
+  "Rcpp",
+  "Rssa",
+  "lattice",
+  "gridExtra",
+  "dplyr",
+  "imager",
+  "reticulate",
+  "ggplot2",
+  "stringi",
+  "BiocManager"
+))
+
+BiocManager::install("EBImage", ask = FALSE, update = FALSE)
+```
+
+Для BM3D дополнительно нужен Python-модуль:
+
+```r
+reticulate::py_install("bm3d", pip = TRUE)
+```
+
+Если `bm3d` не установлен, приложение все равно запускается, просто метод BM3D
+будет недоступен.
+
 
 ## 1. HT Error App
 
