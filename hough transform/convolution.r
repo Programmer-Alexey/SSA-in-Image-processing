@@ -11,9 +11,14 @@ library("Rcpp")
   normalizePath(start_dir, winslash = "/", mustWork = FALSE)
 }
 
-.this_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
-.start_dir <- if (!is.null(.this_file)) dirname(normalizePath(.this_file)) else getwd()
-.project_root <- .find_project_root(.start_dir)
+.project_root_option <- getOption("ssa_image_project_root", NULL)
+.project_root <- if (!is.null(.project_root_option) && dir.exists(.project_root_option)) {
+  normalizePath(.project_root_option, winslash = "/", mustWork = TRUE)
+} else {
+  .this_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  .start_dir <- if (!is.null(.this_file)) dirname(normalizePath(.this_file)) else getwd()
+  .find_project_root(.start_dir)
+}
 .hough_dir <- file.path(.project_root, "hough transform")
 
 source(file.path(.project_root, "ssa-based methods", "cssa-transform.r"))

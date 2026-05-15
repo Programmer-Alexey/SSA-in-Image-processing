@@ -14,11 +14,26 @@ find_project_root <- function(start_dir = getwd()) {
 }
 
 common_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+if (is.null(common_file)) {
+  common_file <- getOption("interactive_graphics.common_path", NULL)
+}
 common_dir <- if (!is.null(common_file)) {
   dirname(normalizePath(common_file, winslash = "/", mustWork = FALSE))
 } else {
   getwd()
 }
+common_candidates <- unique(stats::na.omit(c(
+  common_file,
+  file.path(common_dir, "common.R"),
+  file.path(dirname(common_dir), "common.R"),
+  file.path(common_dir, "interactive_graphics", "common.R")
+)))
+common_path <- common_candidates[file.exists(common_candidates)][1]
+if (is.na(common_path) || !nzchar(common_path)) {
+  stop("Не удалось определить путь к interactive_graphics/common.R.")
+}
+common_path <- normalizePath(common_path, winslash = "/", mustWork = TRUE)
+common_dir <- dirname(common_path)
 project_root <- find_project_root(common_dir)
 
 required_pkgs <- c(
@@ -47,6 +62,46 @@ Rcpp::sourceCpp(file.path(hough_dir, "hough_fast.cpp"), cacheDir = rcpp_cache_di
 
 `%||%` <- function(x, y) {
   if (is.null(x)) y else x
+}
+
+available_worker_count <- function(reserve = 1L, max_workers = 8L) {
+  cores <- parallel::detectCores(logical = TRUE)
+  if (!is.finite(cores) || is.na(cores)) {
+    cores <- 1L
+  }
+  cores <- max(1L, as.integer(cores) - as.integer(reserve))
+  max_workers <- max(1L, as.integer(max_workers))
+  min(cores, max_workers)
+}
+
+normalize_worker_count <- function(n_workers, n_tasks = Inf) {
+  cores <- parallel::detectCores(logical = TRUE)
+  if (!is.finite(cores) || is.na(cores)) {
+    cores <- 1L
+  }
+  n_workers <- suppressWarnings(as.integer(n_workers %||% 1L))
+  if (!is.finite(n_workers) || is.na(n_workers)) {
+    n_workers <- 1L
+  }
+  n_workers <- max(1L, min(n_workers, as.integer(cores)))
+  if (is.finite(n_tasks)) {
+    n_workers <- min(n_workers, max(1L, as.integer(n_tasks)))
+  }
+  n_workers
+}
+
+make_app_cluster <- function(n_workers) {
+  cl <- parallel::makeCluster(as.integer(n_workers))
+  parallel::clusterCall(cl, function(path) {
+    options(interactive_graphics.common_path = path)
+    source(path, local = globalenv())
+    NULL
+  }, common_path)
+  cl
+}
+
+make_rep_seeds <- function(n) {
+  sample.int(.Machine$integer.max, as.integer(n))
 }
 
 bm3d_available <- reticulate::py_module_available("bm3d")
@@ -91,6 +146,86 @@ cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
   clip01(cleaned)
 }
 
+esprit_project_cssa_corrected <- function(x,
+                                          L = (length(x) + 1L) %/% 2L,
+                                          num_components = 1L) {
+  x <- as.vector(x)
+  N <- length(x)
+
+  tryCatch({
+    fit <- Rssa::ssa(x, L = L, kind = "cssa", svd.method = "svd")
+    esprit_res <- Rssa::parestimate(
+      fit,
+      groups = list(signal = seq_len(num_components)),
+      method = "esprit",
+      normalize.roots = FALSE
+    )
+
+    num_components <- min(
+      as.integer(num_components)[1L],
+      length(esprit_res$frequencies)
+    )
+    if (num_components < 1L) {
+      return(x)
+    }
+
+    omega <- round(esprit_res$frequencies[seq_len(num_components)] * N) / N
+    omega <- unique(omega)
+    mu <- exp(2 * pi * omega * 1i)
+    basis <- outer(0:(N - 1L), mu, function(i, z) z ^ i)
+    amplitudes <- as.vector(qr.solve(basis, x))
+
+    as.vector(basis %*% amplitudes)
+  }, error = function(e) {
+    x
+  })
+}
+
+esprit_cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
+  method <- match.arg(method, c("row.row", "col.row"))
+  m <- as.matrix(m)
+  z <- dft(m)
+
+  z_hat <- switch(
+    method,
+    "row.row" = {
+      L <- (ncol(z) + 1L) %/% 2L
+      t(vapply(seq_len(nrow(z)), function(i) {
+        as.complex(esprit_project_cssa_corrected(
+          z[i, ],
+          L = L,
+          num_components = num_of_lines
+        ))
+      }, complex(ncol(z))))
+    },
+    "col.row" = {
+      L <- (nrow(z) + 1L) %/% 2L
+      vapply(seq_len(ncol(z)), function(j) {
+        as.complex(esprit_project_cssa_corrected(
+          z[, j],
+          L = L,
+          num_components = num_of_lines
+        ))
+      }, complex(nrow(z)))
+    }
+  )
+
+  clip01(Re(idft.row(z_hat)))
+}
+
+max_row_denoise <- function(m, k = 1L) {
+  m <- as.matrix(m)
+  k <- max(1L, min(as.integer(k)[1L], ncol(m)))
+  out <- matrix(0, nrow = nrow(m), ncol = ncol(m))
+
+  for (i in seq_len(nrow(m))) {
+    ind <- order(m[i, ], decreasing = TRUE)[seq_len(k)]
+    out[i, ind] <- m[i, ind]
+  }
+
+  clip01(out)
+}
+
 bm3d_denoise <- function(m, sigma_noise) {
   if (!bm3d_available) {
     stop("Python-модуль 'bm3d' недоступен.")
@@ -122,10 +257,19 @@ wiener_denoise <- function(m, ksize = 5L) {
   clip01(out)
 }
 
-available_detectors <- function(num_of_lines, include_quantile = FALSE) {
+available_detectors <- function(num_of_lines,
+                                include_quantile = FALSE,
+                                include_esprit = TRUE,
+                                max_row_k = 1L) {
   detectors <- list(
     cssa_row_row = function(m, sigma_noise) {
       cssa_denoise(m, num_of_lines = num_of_lines, method = "row.row")
+    },
+    cssa_col_row = function(m, sigma_noise) {
+      cssa_denoise(m, num_of_lines = num_of_lines, method = "col.row")
+    },
+    max_row = function(m, sigma_noise) {
+      max_row_denoise(m, k = max_row_k)
     },
     median = function(m, sigma_noise) {
       median_denoise(m, n = 3L)
@@ -147,6 +291,21 @@ available_detectors <- function(num_of_lines, include_quantile = FALSE) {
     )
   }
 
+  if (isTRUE(include_esprit)) {
+    detectors <- append(
+      detectors,
+      list(
+        cssa_row_row_esprit = function(m, sigma_noise) {
+          esprit_cssa_denoise(m, num_of_lines = num_of_lines, method = "row.row")
+        },
+        cssa_col_row_esprit = function(m, sigma_noise) {
+          esprit_cssa_denoise(m, num_of_lines = num_of_lines, method = "col.row")
+        }
+      ),
+      after = 2L
+    )
+  }
+
   if (include_quantile) {
     detectors$quantile_09 <- function(m, sigma_noise) {
       x <- clip01(m)
@@ -161,6 +320,10 @@ available_detectors <- function(num_of_lines, include_quantile = FALSE) {
 detector_labels <- function(detectors) {
   labels <- c(
     cssa_row_row = "CSSA row.row",
+    cssa_col_row = "CSSA col.row",
+    cssa_row_row_esprit = "CSSA row.row + ESPRIT",
+    cssa_col_row_esprit = "CSSA col.row + ESPRIT",
+    max_row = "MAX.row",
     bm3d = "BM3D",
     median = "Median",
     wiener = "Wiener",
@@ -398,6 +561,7 @@ threshold_processed_matrix <- function(
   num_of_lines,
   threshold_mode = "auto_rowrow_sd",
   threshold_value = 0.1,
+  threshold_quantile_p = 0.9,
   threshold_multiplier = 1,
   residual_sd = NULL
 ) {
@@ -413,6 +577,22 @@ threshold_processed_matrix <- function(
 
   if (threshold_mode == "manual") {
     thr <- as.numeric(threshold_value)
+    out <- processed_matrix
+    out[out < thr] <- 0
+    return(list(
+      processed = out,
+      threshold_value = thr,
+      residual_sd = NA_real_
+    ))
+  }
+
+  if (threshold_mode == "quantile") {
+    p <- as.numeric(threshold_quantile_p %||% 0.9)
+    if (!is.finite(p)) {
+      p <- 0.9
+    }
+    p <- min(max(p, 0), 1)
+    thr <- as.numeric(stats::quantile(processed_matrix, probs = p, na.rm = TRUE, names = FALSE))
     out <- processed_matrix
     out[out < thr] <- 0
     return(list(
@@ -499,6 +679,94 @@ make_accumulator_generic <- function(processed_matrix, rho_step = 1, theta_step 
   )
 }
 
+run_ht_repetition_app <- function(
+  cfg,
+  rep_i,
+  seed,
+  method_names,
+  sigma_noise,
+  num_of_lines,
+  rho_step_ht,
+  theta_step_ht,
+  ht_type,
+  threshold_mode,
+  threshold_value,
+  threshold_quantile_p,
+  threshold_multiplier,
+  threshold_method_names,
+  max_row_k = 1L
+) {
+  set.seed(seed)
+  detectors <- available_detectors(num_of_lines = num_of_lines, max_row_k = max_row_k)
+  base_matrix <- config_to_matrix(cfg)
+  true_line <- config_true_params(cfg)
+  noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
+  threshold_enabled <- !identical(threshold_mode, "none") && length(threshold_method_names) > 0L
+  residual_sd <- NULL
+  if (threshold_enabled && identical(threshold_mode, "auto_rowrow_sd")) {
+    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = num_of_lines, method = "row.row")
+    residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
+  }
+
+  weighted <- identical(ht_type, "weighted")
+  rows <- vector("list", length(method_names))
+  for (method_i in seq_along(method_names)) {
+    method_name <- method_names[[method_i]]
+    processed_matrix <- detectors[[method_name]](noisy_matrix, sigma_noise = sigma_noise)
+    cur_threshold_mode <- if (method_name %in% threshold_method_names) threshold_mode else "none"
+    threshold_info <- threshold_processed_matrix(
+      processed_matrix = processed_matrix,
+      noisy_matrix = noisy_matrix,
+      num_of_lines = num_of_lines,
+      threshold_mode = cur_threshold_mode,
+      threshold_value = threshold_value,
+      threshold_quantile_p = threshold_quantile_p,
+      threshold_multiplier = threshold_multiplier,
+      residual_sd = residual_sd
+    )
+
+    ht_result <- make_accumulator_generic(
+      threshold_info$processed,
+      rho_step = rho_step_ht,
+      theta_step = theta_step_ht,
+      weighted = weighted
+    )
+
+    pred_line <- find_k_max(
+      ht_result$accumulator,
+      k = num_of_lines,
+      qrho = ht_result$rho,
+      qtheta = ht_result$theta,
+      suppress = num_of_lines > 1L,
+      window = 6L
+    )
+
+    err <- compute_err(true_line, pred_line)
+
+    rows[[method_i]] <- data.frame(
+      config_id = cfg$config_id,
+      description = cfg$description,
+      n_col = cfg$n_col,
+      n_row = cfg$n_row,
+      sigma = sigma_noise,
+      rep = rep_i,
+      method = method_name,
+      true_rho = paste(round(true_line[, 1], 6), collapse = "; "),
+      true_theta = paste(round(true_line[, 2], 6), collapse = "; "),
+      pred_rho = paste(round(pred_line[, 1], 6), collapse = "; "),
+      pred_theta = paste(round(pred_line[, 2], 6), collapse = "; "),
+      active_pixels = ht_result$active_pixels,
+      active_weight = ht_result$active_weight,
+      threshold_value = threshold_info$threshold_value,
+      dr = as.numeric(err["dr"]),
+      dtheta = as.numeric(err["dtheta"]),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  dplyr::bind_rows(rows)
+}
+
 run_ht_experiment_app <- function(
   config_list,
   method_names,
@@ -510,89 +778,86 @@ run_ht_experiment_app <- function(
   ht_type,
   threshold_mode,
   threshold_value,
-  threshold_multiplier,
-  progress = NULL
+  threshold_quantile_p = 0.9,
+  threshold_multiplier = 1,
+  threshold_method_names = NULL,
+  progress = NULL,
+  n_workers = 1L,
+  max_row_k = 1L
 ) {
-  detectors <- available_detectors(num_of_lines = num_of_lines)
+  detectors <- available_detectors(num_of_lines = num_of_lines, max_row_k = max_row_k)
   method_names <- intersect(method_names, names(detectors))
   if (length(method_names) == 0L) {
     stop("Не выбрано ни одного доступного метода.")
   }
+  if (is.null(threshold_method_names)) {
+    threshold_method_names <- method_names
+  } else {
+    threshold_method_names <- intersect(threshold_method_names, method_names)
+  }
 
-  results_list <- vector("list", length(config_list) * n_rep * length(method_names))
-  idx_out <- 1L
-  weighted <- identical(ht_type, "weighted")
-  total_steps <- length(config_list) * n_rep * length(method_names)
+  tasks <- unlist(lapply(seq_along(config_list), function(cfg_i) {
+    lapply(seq_len(n_rep), function(rep_i) {
+      list(cfg = config_list[[cfg_i]], rep_i = rep_i)
+    })
+  }), recursive = FALSE)
+  seeds <- make_rep_seeds(length(tasks))
+  for (i in seq_along(tasks)) {
+    tasks[[i]]$seed <- seeds[[i]]
+  }
+
+  n_workers <- normalize_worker_count(n_workers, length(tasks))
+  worker_args <- list(
+    method_names = method_names,
+    sigma_noise = sigma_noise,
+    num_of_lines = num_of_lines,
+    rho_step_ht = rho_step_ht,
+    theta_step_ht = theta_step_ht,
+    ht_type = ht_type,
+    threshold_mode = threshold_mode,
+    threshold_value = threshold_value,
+    threshold_quantile_p = threshold_quantile_p,
+    threshold_multiplier = threshold_multiplier,
+    threshold_method_names = threshold_method_names,
+    max_row_k = max_row_k
+  )
+
+  if (n_workers > 1L) {
+    if (!is.null(progress)) {
+      progress(0.05, detail = sprintf("Параллельный запуск: %d воркеров", n_workers))
+    }
+    cl <- make_app_cluster(n_workers)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    results_list <- parallel::parLapplyLB(cl, tasks, function(task, args) {
+      do.call(
+        run_ht_repetition_app,
+        c(
+          list(cfg = task$cfg, rep_i = task$rep_i, seed = task$seed),
+          args
+        )
+      )
+    }, worker_args)
+    if (!is.null(progress)) {
+      progress(1, detail = "Параллельный расчет завершен")
+    }
+    return(dplyr::bind_rows(results_list))
+  }
+
+  results_list <- vector("list", length(tasks))
   step_i <- 0L
 
-  for (cfg in config_list) {
-    base_matrix <- config_to_matrix(cfg)
-    true_line <- config_true_params(cfg)
-
-    for (rep_i in seq_len(n_rep)) {
-      noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
-      residual_sd <- NULL
-      if (identical(threshold_mode, "auto_rowrow_sd")) {
-        rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = num_of_lines, method = "row.row")
-        residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
-      }
-
-      for (method_name in method_names) {
-        processed_matrix <- detectors[[method_name]](noisy_matrix, sigma_noise = sigma_noise)
-        threshold_info <- threshold_processed_matrix(
-          processed_matrix = processed_matrix,
-          noisy_matrix = noisy_matrix,
-          num_of_lines = num_of_lines,
-          threshold_mode = threshold_mode,
-          threshold_value = threshold_value,
-          threshold_multiplier = threshold_multiplier,
-          residual_sd = residual_sd
-        )
-
-        ht_result <- make_accumulator_generic(
-          threshold_info$processed,
-          rho_step = rho_step_ht,
-          theta_step = theta_step_ht,
-          weighted = weighted
-        )
-
-        pred_line <- find_k_max(
-          ht_result$accumulator,
-          k = num_of_lines,
-          qrho = ht_result$rho,
-          qtheta = ht_result$theta,
-          suppress = num_of_lines > 1L,
-          window = 6L
-        )
-
-        err <- compute_err(true_line, pred_line)
-
-        results_list[[idx_out]] <- data.frame(
-          config_id = cfg$config_id,
-          description = cfg$description,
-          n_col = cfg$n_col,
-          n_row = cfg$n_row,
-          sigma = sigma_noise,
-          rep = rep_i,
-          method = method_name,
-          true_rho = paste(round(true_line[, 1], 6), collapse = "; "),
-          true_theta = paste(round(true_line[, 2], 6), collapse = "; "),
-          pred_rho = paste(round(pred_line[, 1], 6), collapse = "; "),
-          pred_theta = paste(round(pred_line[, 2], 6), collapse = "; "),
-          active_pixels = ht_result$active_pixels,
-          active_weight = ht_result$active_weight,
-          threshold_value = threshold_info$threshold_value,
-          dr = as.numeric(err["dr"]),
-          dtheta = as.numeric(err["dtheta"]),
-          stringsAsFactors = FALSE
-        )
-        idx_out <- idx_out + 1L
-
-        step_i <- step_i + 1L
-        if (!is.null(progress)) {
-          progress(step_i / total_steps, detail = sprintf("%s / rep %d / %s", cfg$config_id, rep_i, method_name))
-        }
-      }
+  for (task_i in seq_along(tasks)) {
+    task <- tasks[[task_i]]
+    results_list[[task_i]] <- do.call(
+      run_ht_repetition_app,
+      c(
+        list(cfg = task$cfg, rep_i = task$rep_i, seed = task$seed),
+        worker_args
+      )
+    )
+    step_i <- step_i + 1L
+    if (!is.null(progress)) {
+      progress(step_i / length(tasks), detail = sprintf("%s / rep %d", task$cfg$config_id, task$rep_i))
     }
   }
 
@@ -649,6 +914,91 @@ ideal_discretization_error <- function(true_line, rho_step_ht, theta_step_ht) {
   )
 }
 
+find_big_error_rep_app <- function(
+  cfg,
+  rep_i,
+  seed,
+  method_name,
+  sigma_noise,
+  num_of_lines,
+  num_maxima,
+  rho_step_ht,
+  theta_step_ht,
+  ht_type,
+  threshold_mode,
+  threshold_value,
+  threshold_quantile_p,
+  threshold_multiplier,
+  factor_threshold,
+  ideal,
+  max_row_k = 1L
+) {
+  set.seed(seed)
+  detectors <- available_detectors(num_of_lines = num_of_lines, max_row_k = max_row_k)
+  base_matrix <- config_to_matrix(cfg)
+  true_line <- config_true_params(cfg)
+  weighted <- identical(ht_type, "weighted")
+
+  noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
+  residual_sd <- NULL
+  if (identical(threshold_mode, "auto_rowrow_sd")) {
+    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = num_of_lines, method = "row.row")
+    residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
+  }
+  processed_matrix <- detectors[[method_name]](noisy_matrix, sigma_noise = sigma_noise)
+  threshold_info <- threshold_processed_matrix(
+    processed_matrix = processed_matrix,
+    noisy_matrix = noisy_matrix,
+    num_of_lines = num_of_lines,
+    threshold_mode = threshold_mode,
+    threshold_value = threshold_value,
+    threshold_quantile_p = threshold_quantile_p,
+    threshold_multiplier = threshold_multiplier,
+    residual_sd = residual_sd
+  )
+
+  ht_result <- make_accumulator_generic(
+    threshold_info$processed,
+    rho_step = rho_step_ht,
+    theta_step = theta_step_ht,
+    weighted = weighted
+  )
+
+  pred_line_all <- find_k_max(
+    ht_result$accumulator,
+    k = num_maxima,
+    qrho = ht_result$rho,
+    qtheta = ht_result$theta,
+    suppress = num_maxima > 1L,
+    window = 6L
+  )
+
+  pred_line <- pred_line_all[seq_len(num_of_lines), , drop = FALSE]
+  err <- compute_err(true_line, pred_line)
+  dr_ratio <- as.numeric(err["dr"]) / max(as.numeric(ideal$dr), 1e-12)
+  dtheta_ratio <- as.numeric(err["dtheta"]) / max(as.numeric(ideal$dtheta), 1e-12)
+
+  if (dr_ratio < factor_threshold && dtheta_ratio < factor_threshold) {
+    return(NULL)
+  }
+
+  list(
+    case_id = sprintf("rep_%03d", rep_i),
+    rep = rep_i,
+    dr = as.numeric(err["dr"]),
+    dtheta = as.numeric(err["dtheta"]),
+    dr_ratio = dr_ratio,
+    dtheta_ratio = dtheta_ratio,
+    threshold_value = threshold_info$threshold_value,
+    noisy_matrix = noisy_matrix,
+    processed_matrix = threshold_info$processed,
+    ht_result = ht_result,
+    pred_line = pred_line,
+    pred_line_all = pred_line_all,
+    true_line = true_line
+  )
+}
+
 find_big_error_cases <- function(
   cfg,
   method_name,
@@ -660,13 +1010,16 @@ find_big_error_cases <- function(
   ht_type,
   threshold_mode,
   threshold_value,
-  threshold_multiplier,
+  threshold_quantile_p = 0.9,
+  threshold_multiplier = 1,
   n_search,
   factor_threshold,
   max_cases,
-  progress = NULL
+  progress = NULL,
+  n_workers = 1L,
+  max_row_k = 1L
 ) {
-  detectors <- available_detectors(num_of_lines = num_of_lines)
+  detectors <- available_detectors(num_of_lines = num_of_lines, max_row_k = max_row_k)
   if (!method_name %in% names(detectors)) {
     stop("Метод ", method_name, " недоступен.")
   }
@@ -675,68 +1028,71 @@ find_big_error_cases <- function(
   base_matrix <- config_to_matrix(cfg)
   true_line <- config_true_params(cfg)
   ideal <- ideal_discretization_error(true_line, rho_step_ht, theta_step_ht)
-  weighted <- identical(ht_type, "weighted")
   cases <- list()
+  rep_ids <- seq_len(n_search)
+  seeds <- make_rep_seeds(length(rep_ids))
+  n_workers <- normalize_worker_count(n_workers, length(rep_ids))
+
+  worker_args <- list(
+    cfg = cfg,
+    method_name = method_name,
+    sigma_noise = sigma_noise,
+    num_of_lines = num_of_lines,
+    num_maxima = num_maxima,
+    rho_step_ht = rho_step_ht,
+    theta_step_ht = theta_step_ht,
+    ht_type = ht_type,
+    threshold_mode = threshold_mode,
+    threshold_value = threshold_value,
+    threshold_quantile_p = threshold_quantile_p,
+    threshold_multiplier = threshold_multiplier,
+    factor_threshold = factor_threshold,
+    ideal = ideal,
+    max_row_k = max_row_k
+  )
+
+  if (n_workers > 1L) {
+    if (!is.null(progress)) {
+      progress(0.05, detail = sprintf("Параллельный поиск: %d воркеров", n_workers))
+    }
+    tasks <- Map(function(rep_i, seed) list(rep_i = rep_i, seed = seed), rep_ids, seeds)
+    cl <- make_app_cluster(n_workers)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    found <- parallel::parLapplyLB(cl, tasks, function(task, args) {
+      do.call(
+        find_big_error_rep_app,
+        c(
+          list(rep_i = task$rep_i, seed = task$seed),
+          args
+        )
+      )
+    }, worker_args)
+    cases <- found[!vapply(found, is.null, logical(1))]
+    if (length(cases) > 0L) {
+      case_reps <- vapply(cases, `[[`, integer(1), "rep")
+      cases <- cases[order(case_reps)]
+      cases <- cases[seq_len(min(length(cases), max_cases))]
+    }
+    if (!is.null(progress)) {
+      progress(1, detail = sprintf("Найдено случаев: %d", length(cases)))
+    }
+    return(list(ideal = ideal, cases = cases))
+  }
 
   for (rep_i in seq_len(n_search)) {
     if (length(cases) >= max_cases) {
       break
     }
 
-    noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
-    residual_sd <- NULL
-    if (identical(threshold_mode, "auto_rowrow_sd")) {
-      rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = num_of_lines, method = "row.row")
-      residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
-    }
-    processed_matrix <- detectors[[method_name]](noisy_matrix, sigma_noise = sigma_noise)
-    threshold_info <- threshold_processed_matrix(
-      processed_matrix = processed_matrix,
-      noisy_matrix = noisy_matrix,
-      num_of_lines = num_of_lines,
-      threshold_mode = threshold_mode,
-      threshold_value = threshold_value,
-      threshold_multiplier = threshold_multiplier,
-      residual_sd = residual_sd
-    )
-
-    ht_result <- make_accumulator_generic(
-      threshold_info$processed,
-      rho_step = rho_step_ht,
-      theta_step = theta_step_ht,
-      weighted = weighted
-    )
-
-    pred_line_all <- find_k_max(
-      ht_result$accumulator,
-      k = num_maxima,
-      qrho = ht_result$rho,
-      qtheta = ht_result$theta,
-      suppress = num_maxima > 1L,
-      window = 6L
-    )
-
-    pred_line <- pred_line_all[seq_len(num_of_lines), , drop = FALSE]
-    err <- compute_err(true_line, pred_line)
-    dr_ratio <- as.numeric(err["dr"]) / max(as.numeric(ideal$dr), 1e-12)
-    dtheta_ratio <- as.numeric(err["dtheta"]) / max(as.numeric(ideal$dtheta), 1e-12)
-
-    if (dr_ratio >= factor_threshold || dtheta_ratio >= factor_threshold) {
-      cases[[length(cases) + 1L]] <- list(
-        case_id = sprintf("rep_%03d", rep_i),
-        rep = rep_i,
-        dr = as.numeric(err["dr"]),
-        dtheta = as.numeric(err["dtheta"]),
-        dr_ratio = dr_ratio,
-        dtheta_ratio = dtheta_ratio,
-        threshold_value = threshold_info$threshold_value,
-        noisy_matrix = noisy_matrix,
-        processed_matrix = threshold_info$processed,
-        ht_result = ht_result,
-        pred_line = pred_line,
-        pred_line_all = pred_line_all,
-        true_line = true_line
+    case <- do.call(
+      find_big_error_rep_app,
+      c(
+        list(rep_i = rep_i, seed = seeds[[rep_i]]),
+        worker_args
       )
+    )
+    if (!is.null(case)) {
+      cases[[length(cases) + 1L]] <- case
     }
 
     if (!is.null(progress)) {
@@ -873,31 +1229,76 @@ row_metrics <- function(est, signal_index) {
   )
 }
 
-run_unit_frequency_experiment <- function(n = 100L, n_rep = 1L, sigma = 0.2, seed = 1111L) {
-  rows <- vector("list", n * n_rep)
-  out_i <- 1L
+run_unit_frequency_rep <- function(rep_i, rep_seed, n, sigma) {
+  set.seed(rep_seed)
+  noise_vec <- rnorm(n, sd = sigma)
+  rows <- vector("list", n)
 
+  for (signal_index in seq_len(n)) {
+    clean <- make_unit_row(n, signal_index)
+    noisy <- clean + noise_vec
+    est <- cssa_rank1_row(noisy)
+
+    omega <- 2 * pi * (signal_index - 1L) / n
+    omega_wrapped <- atan2(sin(omega), cos(omega))
+
+    rows[[signal_index]] <- data.frame(
+      rep = rep_i,
+      signal_index = signal_index,
+      omega = omega,
+      omega_wrapped = omega_wrapped,
+      row_metrics(est, signal_index),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  dplyr::bind_rows(rows)
+}
+
+run_unit_frequency_experiment <- function(
+  n = 100L,
+  n_rep = 1L,
+  sigma = 0.2,
+  seed = 1111L,
+  n_workers = 1L,
+  progress = NULL
+) {
   set.seed(seed)
-  for (rep_i in seq_len(n_rep)) {
-    noise_vec <- rnorm(n, sd = sigma)
+  rep_seeds <- make_rep_seeds(n_rep)
+  rep_ids <- seq_len(n_rep)
+  n_workers <- normalize_worker_count(n_workers, n_rep)
 
-    for (signal_index in seq_len(n)) {
-      clean <- make_unit_row(n, signal_index)
-      noisy <- clean + noise_vec
-      est <- cssa_rank1_row(noisy)
-
-      omega <- 2 * pi * (signal_index - 1L) / n
-      omega_wrapped <- atan2(sin(omega), cos(omega))
-
-      rows[[out_i]] <- data.frame(
-        rep = rep_i,
-        signal_index = signal_index,
-        omega = omega,
-        omega_wrapped = omega_wrapped,
-        row_metrics(est, signal_index),
-        stringsAsFactors = FALSE
+  if (n_workers > 1L) {
+    if (!is.null(progress)) {
+      progress(0.05, detail = sprintf("Параллельный расчет: %d воркеров", n_workers))
+    }
+    tasks <- Map(function(rep_i, rep_seed) list(rep_i = rep_i, rep_seed = rep_seed), rep_ids, rep_seeds)
+    cl <- make_app_cluster(n_workers)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    rows <- parallel::parLapplyLB(cl, tasks, function(task, n, sigma) {
+      run_unit_frequency_rep(
+        rep_i = task$rep_i,
+        rep_seed = task$rep_seed,
+        n = n,
+        sigma = sigma
       )
-      out_i <- out_i + 1L
+    }, n = n, sigma = sigma)
+    if (!is.null(progress)) {
+      progress(1, detail = "Параллельный расчет завершен")
+    }
+    return(dplyr::bind_rows(rows))
+  }
+
+  rows <- vector("list", n_rep)
+  for (rep_i in rep_ids) {
+    rows[[rep_i]] <- run_unit_frequency_rep(
+      rep_i = rep_i,
+      rep_seed = rep_seeds[[rep_i]],
+      n = n,
+      sigma = sigma
+    )
+    if (!is.null(progress)) {
+      progress(rep_i / n_rep, detail = sprintf("rep %d / %d", rep_i, n_rep))
     }
   }
 

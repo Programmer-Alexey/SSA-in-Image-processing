@@ -1,0 +1,571 @@
+### Реконструкция CSSA + ESPRIT
+
+```{r, include=FALSE}
+setup_candidates <- c(
+  "00_setup.Rmd",
+  file.path("cssa esprit", "00_setup.Rmd")
+)
+if (!exists("cssa_esprit_setup_loaded", inherits = FALSE)) {
+  setup_file <- setup_candidates[file.exists(setup_candidates)][1L]
+  if (is.na(setup_file)) {
+    stop("Cannot find 00_setup.Rmd")
+  }
+  setup_code <- tempfile(fileext = ".R")
+  knitr::purl(setup_file, output = setup_code, quiet = TRUE)
+  source(setup_code, local = knitr::knit_global())
+}
+```
+
+```{r, include=FALSE}
+cssa_one_row_case <- function(signal_ind, noise_matrix, num_components = 1L) {
+  clean <- matrix(0, nrow = 1L, ncol = ncol(noise_matrix))
+  clean[1L, signal_ind] <- 1
+
+  est <- (clean + noise_matrix) |>
+    dft() |>
+    cssa.row(num.line = num_components) |>
+    idft.row() |>
+    Re() |>
+    as.numeric()
+
+  list(signal_ind = signal_ind, est = est)
+}
+
+smear_summary <- function(case, radius = 2L, threshold = 0) {
+  x <- pmax(case$est, 0)
+  x[x <= threshold] <- 0
+
+  signal_ind <- case$signal_ind
+  near_idx <- max(1L, signal_ind - radius):min(length(x), signal_ind + radius)
+  total_mass <- sum(x)
+  near_mass <- sum(x[near_idx])
+
+  data.frame(
+    signal_ind = signal_ind,
+    max_ind = which.max(x),
+    signal_value = case$est[signal_ind],
+    max_value = max(case$est),
+    near_mass_share = near_mass / total_mass,
+    side_mass_share = (near_mass - x[signal_ind]) / total_mass,
+    outside_mass_share = (total_mass - near_mass) / total_mass,
+    smear_score = 1 - near_mass / total_mass,
+    positive_count = sum(x > 0)
+  )
+}
+
+find_smear_extremes <- function(noise_matrix,
+                                search_idx = 5:(ncol(noise_matrix) - 5),
+                                radius = 2L,
+                                threshold = 0,
+                                case_fun = cssa_one_row_case,
+                                ...) {
+  cases <- lapply(search_idx, case_fun, noise_matrix = noise_matrix, ...)
+  names(cases) <- as.character(search_idx)
+
+  diagnostics <- do.call(
+    rbind,
+    lapply(cases, smear_summary, radius = radius, threshold = threshold)
+  )
+  rownames(diagnostics) <- NULL
+
+  diagnostics <- subset(
+    diagnostics,
+    max_ind == signal_ind & is.finite(smear_score)
+  )
+  if (nrow(diagnostics) == 0L) {
+    stop("No finite smear diagnostics with max_ind == signal_ind.")
+  }
+  diagnostics <- diagnostics[order(diagnostics$smear_score), ]
+
+  min_row <- diagnostics[1L, ]
+  max_row <- diagnostics[nrow(diagnostics), ]
+
+  list(
+    min = list(summary = min_row, case = cases[[as.character(min_row$signal_ind)]]),
+    max = list(summary = max_row, case = cases[[as.character(max_row$signal_ind)]]),
+    diagnostics = diagnostics,
+    cases = cases
+  )
+}
+
+smear_columns <- c(
+  "signal_ind",
+  "max_ind",
+  "signal_value",
+  "max_value",
+  "near_mass_share",
+  "side_mass_share",
+  "outside_mass_share",
+  "smear_score",
+  "positive_count"
+)
+
+smear_three_point_summary <- function(extremes) {
+  mid_idx <- ceiling(nrow(extremes$diagnostics) / 2)
+  out <- rbind(
+    minimum = extremes$min$summary,
+    median = extremes$diagnostics[mid_idx, ],
+    maximum = extremes$max$summary
+  )[, smear_columns]
+  data.frame(case = rownames(out), out, row.names = NULL)
+}
+
+plot_smear_case <- function(case_obj, summary_row, main_prefix) {
+  signal_ind <- case_obj$signal_ind
+  plot(
+    case_obj$est,
+    type = "h",
+    lwd = 2,
+    col = "grey20",
+    xlab = "Index",
+    ylab = "Intensity",
+    main = sprintf(
+      "%s: index %d, smear = %.3f",
+      main_prefix,
+      signal_ind,
+      summary_row$smear_score
+    )
+  )
+  abline(v = signal_ind, col = "firebrick", lty = 2)
+  legend(
+    "topright",
+    legend = c("reconstruction", "true pixel"),
+    col = c("grey20", "firebrick"),
+    lty = c(1, 2),
+    lwd = c(2, 1),
+    bty = "n"
+  )
+}
+
+esprit_project_cssa <- function(x,
+                                L = (length(x) + 1L) %/% 2L,
+                                num_components = 1L,
+                                correct_frequency = FALSE) {
+  x <- as.vector(x)
+  N <- length(x)
+  fit <- Rssa::ssa(x, L = L, kind = "cssa", svd.method = "svd")
+  decomposition <- get("decomposition", attr(fit, ".env"))
+  num_components <- as.integer(num_components)[1L]
+  num_components <- max(1L, min(num_components, ncol(decomposition$U)))
+
+  esprit_res <- Rssa::parestimate(
+    fit,
+    groups = list(signal = seq_len(num_components)),
+    method = "esprit",
+    normalize.roots = FALSE
+  )
+  num_components <- min(
+    num_components,
+    length(esprit_res$roots),
+    length(esprit_res$frequencies)
+  )
+
+  omega <- esprit_res$frequencies[seq_len(num_components)]
+  if (correct_frequency) {
+    omega <- round(omega * N) / N
+  }
+  # ESPRIT root moduli are discarded; projection uses only the estimated phases.
+  omega <- unique(omega)
+  num_components <- length(omega)
+  mu <- exp(2 * pi * omega * 1i)
+
+  basis <- outer(0:(N - 1L), mu, function(i, z) z ^ i)
+  amplitudes <- as.vector(qr.solve(basis, x))
+
+  as.vector(basis %*% amplitudes)
+}
+
+classic_esprit_cssa <- function(x, L = (length(x) + 1L) %/% 2L, num_components = 1L) {
+  esprit_project_cssa(
+    x,
+    L = L,
+    num_components = num_components,
+    correct_frequency = FALSE
+  )
+}
+
+new_cssa <- function(x, L = (length(x) + 1L) %/% 2L, num_components = 1L) {
+  esprit_project_cssa(
+    x,
+    L = L,
+    num_components = num_components,
+    correct_frequency = TRUE
+  )
+}
+
+raw_esprit_cssa <- classic_esprit_cssa
+
+esprit_cssa_denoise <- function(m,
+                                L = (ncol(as.matrix(m)) + 1L) %/% 2L,
+                                num_components = 1L,
+                                correct_frequency = FALSE,
+                                clip = TRUE) {
+  m <- as.matrix(m)
+  z <- dft(m)
+  z_hat <- t(apply(
+    z,
+    1L,
+    esprit_project_cssa,
+    L = L,
+    num_components = num_components,
+    correct_frequency = correct_frequency
+  ))
+  out <- Re(idft.row(z_hat))
+
+  if (clip) clip01(out) else out
+}
+
+raw_esprit_cssa_denoise <- function(m,
+                                    L = (ncol(as.matrix(m)) + 1L) %/% 2L,
+                                    num_components = 1L,
+                                    clip = TRUE) {
+  esprit_cssa_denoise(
+    m,
+    L = L,
+    num_components = num_components,
+    correct_frequency = FALSE,
+    clip = clip
+  )
+}
+
+new_cssa_denoise <- function(m,
+                             L = (ncol(as.matrix(m)) + 1L) %/% 2L,
+                             num_components = 1L,
+                             clip = TRUE) {
+  esprit_cssa_denoise(
+    m,
+    L = L,
+    num_components = num_components,
+    correct_frequency = TRUE,
+    clip = clip
+  )
+}
+
+esprit_one_row_case <- function(signal_ind,
+                                noise_matrix,
+                                L = (ncol(noise_matrix) + 1L) %/% 2L,
+                                num_components = 1L,
+                                correct_frequency = FALSE) {
+  clean <- matrix(0, nrow = 1L, ncol = ncol(noise_matrix))
+  clean[1L, signal_ind] <- 1
+
+  est <- esprit_cssa_denoise(
+    clean + noise_matrix,
+    L = L,
+    num_components = num_components,
+    correct_frequency = correct_frequency,
+    clip = FALSE
+  ) |>
+    as.numeric()
+
+  list(signal_ind = signal_ind, est = est)
+}
+
+raw_esprit_cssa_one_row_case <- function(signal_ind,
+                                         noise_matrix,
+                                         L = (ncol(noise_matrix) + 1L) %/% 2L,
+                                         num_components = 1L) {
+  esprit_one_row_case(
+    signal_ind,
+    noise_matrix = noise_matrix,
+    L = L,
+    num_components = num_components,
+    correct_frequency = FALSE
+  )
+}
+
+new_cssa_one_row_case <- function(signal_ind,
+                                  noise_matrix,
+                                  L = (ncol(noise_matrix) + 1L) %/% 2L,
+                                  num_components = 1L) {
+  esprit_one_row_case(
+    signal_ind,
+    noise_matrix = noise_matrix,
+    L = L,
+    num_components = num_components,
+    correct_frequency = TRUE
+  )
+}
+
+common_median_smear_index <- function(smear_comparisons) {
+  common_idx <- Reduce(
+    intersect,
+    lapply(smear_comparisons, function(x) x$diagnostics$signal_ind)
+  )
+  if (length(common_idx) == 0L) {
+    stop("No common smear index with matching maximum for all methods.")
+  }
+
+  base_diagnostics <- smear_comparisons[[1L]]$diagnostics
+  base_diagnostics <- base_diagnostics[base_diagnostics$signal_ind %in% common_idx, ]
+  base_diagnostics$signal_ind[ceiling(nrow(base_diagnostics) / 2)]
+}
+
+plain_cssa_binary <- function(m, threshold = 0.1, num_components = 1L) {
+  denoised <- cssa_denoise(
+    m,
+    num_of_lines = num_components,
+    method = "row.row",
+    clip = TRUE
+  )
+
+  list(
+    denoised = denoised,
+    binary = ifelse(denoised >= threshold, 1, 0)
+  )
+}
+
+new_cssa_binary <- function(m,
+                            threshold = 0.1,
+                            L = (ncol(as.matrix(m)) + 1L) %/% 2L,
+                            num_components = 1L,
+                            clip = TRUE) {
+  denoised <- new_cssa_denoise(
+    m,
+    L = L,
+    num_components = num_components,
+    clip = clip
+  )
+
+  list(
+    denoised = denoised,
+    binary = ifelse(denoised >= threshold, 1, 0)
+  )
+}
+
+reconstruction_preprocess_binary <- function(m,
+                                             method,
+                                             threshold = 0.1,
+                                             num_components = 1L) {
+  switch(
+    method,
+    cssa = plain_cssa_binary(
+      m,
+      threshold = threshold,
+      num_components = num_components
+    ),
+    classic_esprit = {
+      denoised <- raw_esprit_cssa_denoise(
+        m,
+        num_components = num_components,
+        clip = TRUE
+      )
+      list(denoised = denoised, binary = ifelse(denoised >= threshold, 1, 0))
+    },
+    corrected_esprit = {
+      denoised <- new_cssa_denoise(
+        m,
+        num_components = num_components,
+        clip = TRUE
+      )
+      list(denoised = denoised, binary = ifelse(denoised >= threshold, 1, 0))
+    },
+    stop("Unknown reconstruction method: ", method)
+  )
+}
+
+reconstruction_ht_error_once <- function(method,
+                                         label,
+                                         noisy,
+                                         a = 2,
+                                         b = -1,
+                                         threshold = 0.1,
+                                         num_components = 1L,
+                                         rho_step = 1,
+                                         theta_step = 0.01) {
+  processed <- reconstruction_preprocess_binary(
+    noisy,
+    method = method,
+    threshold = threshold,
+    num_components = num_components
+  )
+
+  ht <- make_accumulator(
+    processed$binary,
+    detector = function(m) m,
+    rho_step = rho_step,
+    theta_step = theta_step
+  )
+
+  true_line <- convert_ab_to_rho_theta(a, b)
+  pred_line <- find_k_max(ht$accumulator, 1L, ht$rho, ht$theta)[1L, ]
+  err <- line_parameter_error(true_line, pred_line)
+
+  data.frame(
+    method = label,
+    pred_rho = unname(pred_line["rho"]),
+    pred_theta = unname(pred_line["theta"]),
+    rho_mse = unname(err["rho_mse"]),
+    theta_mse = unname(err["theta_mse"]),
+    active_pixels = sum(processed$binary > 0),
+    row.names = NULL
+  )
+}
+```
+
+```{r}
+set.seed(1111)
+
+comparison_n <- 100L
+comparison_sigma <- 0.2
+comparison_noise_matrix <- add.noise(
+  matrix(0, nrow = 1L, ncol = comparison_n),
+  sigma = comparison_sigma
+)
+comparison_search_idx <- 5:(comparison_n - 5)
+comparison_radius <- 2L
+comparison_threshold <- 0
+comparison_num_components <- 1L
+
+cssa_smear_comparison <- find_smear_extremes(
+  noise_matrix = comparison_noise_matrix,
+  search_idx = comparison_search_idx,
+  radius = comparison_radius,
+  threshold = comparison_threshold,
+  case_fun = cssa_one_row_case,
+  num_components = comparison_num_components
+)
+
+classic_esprit_smear_comparison <- find_smear_extremes(
+  noise_matrix = comparison_noise_matrix,
+  search_idx = comparison_search_idx,
+  radius = comparison_radius,
+  threshold = comparison_threshold,
+  case_fun = raw_esprit_cssa_one_row_case,
+  num_components = comparison_num_components
+)
+
+corrected_esprit_smear_comparison <- find_smear_extremes(
+  noise_matrix = comparison_noise_matrix,
+  search_idx = comparison_search_idx,
+  radius = comparison_radius,
+  threshold = comparison_threshold,
+  case_fun = new_cssa_one_row_case,
+  num_components = comparison_num_components
+)
+
+smear_comparisons <- list(
+  "Basic CSSA" = cssa_smear_comparison,
+  "CSSA + ESPRIT (no correction)" = classic_esprit_smear_comparison,
+  "CSSA + ESPRIT (corrected)" = corrected_esprit_smear_comparison
+)
+
+median_signal_index <- common_median_smear_index(smear_comparisons)
+
+median_cases <- list(
+  "Basic CSSA" = cssa_one_row_case(
+    median_signal_index,
+    noise_matrix = comparison_noise_matrix,
+    num_components = comparison_num_components
+  ),
+  "CSSA + ESPRIT (no correction)" = raw_esprit_cssa_one_row_case(
+    median_signal_index,
+    noise_matrix = comparison_noise_matrix,
+    num_components = comparison_num_components
+  ),
+  "CSSA + ESPRIT (corrected)" = new_cssa_one_row_case(
+    median_signal_index,
+    noise_matrix = comparison_noise_matrix,
+    num_components = comparison_num_components
+  )
+)
+
+median_summaries <- lapply(
+  median_cases,
+  smear_summary,
+  radius = comparison_radius,
+  threshold = comparison_threshold
+)
+stopifnot(all(vapply(median_summaries, function(x) x$max_ind == x$signal_ind, logical(1))))
+
+smear_summary_table <- do.call(rbind, lapply(names(smear_comparisons), function(method_name) {
+  out <- smear_three_point_summary(smear_comparisons[[method_name]])
+  out$method <- method_name
+  out
+}))
+smear_summary_table <- smear_summary_table[
+  c("method", "case", smear_columns)
+]
+
+dt_table(
+  smear_summary_table,
+  caption = "Smear comparison for CSSA / ESPRIT projections",
+  page_length = 9L
+)
+```
+
+```{r, fig.width=12, fig.height=4}
+old_par <- par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
+
+for (method_name in names(median_cases)) {
+  plot_smear_case(
+    median_cases[[method_name]],
+    median_summaries[[method_name]],
+    method_name
+  )
+}
+
+par(old_par)
+```
+
+```{r}
+reconstruction_ht_a <- 2
+reconstruction_ht_b <- -1
+reconstruction_ht_clean <- make_line_matrix(
+  n_row = 100L,
+  n_col = 100L,
+  a = reconstruction_ht_a,
+  b = reconstruction_ht_b
+)
+reconstruction_ht_sigma <- 0.2
+reconstruction_ht_n_rep <- 100L
+reconstruction_ht_methods <- data.frame(
+  method = c("cssa", "classic_esprit", "corrected_esprit"),
+  label = c(
+    "Basic CSSA",
+    "CSSA + ESPRIT (no correction)",
+    "CSSA + ESPRIT (corrected)"
+  ),
+  stringsAsFactors = FALSE
+)
+
+set.seed(2026)
+reconstruction_ht_samples <- do.call(
+  rbind,
+  lapply(seq_len(reconstruction_ht_n_rep), function(rep_i) {
+    noisy <- add.noise(reconstruction_ht_clean, sigma = reconstruction_ht_sigma)
+    rows <- lapply(seq_len(nrow(reconstruction_ht_methods)), function(method_i) {
+      out <- reconstruction_ht_error_once(
+        method = reconstruction_ht_methods$method[method_i],
+        label = reconstruction_ht_methods$label[method_i],
+        noisy = noisy,
+        a = reconstruction_ht_a,
+        b = reconstruction_ht_b
+      )
+      out$rep <- rep_i
+      out
+    })
+    do.call(rbind, rows)
+  })
+)
+
+reconstruction_ht_errors <- aggregate(
+  cbind(rho_mse, theta_mse, active_pixels) ~ method,
+  data = reconstruction_ht_samples,
+  FUN = mean
+)
+reconstruction_ht_errors$n_rep <- reconstruction_ht_n_rep
+reconstruction_ht_errors <- reconstruction_ht_errors[
+  match(reconstruction_ht_methods$label, reconstruction_ht_errors$method),
+]
+rownames(reconstruction_ht_errors) <- NULL
+names(reconstruction_ht_errors)[names(reconstruction_ht_errors) == "rho_mse"] <- "mean_rho_mse"
+names(reconstruction_ht_errors)[names(reconstruction_ht_errors) == "theta_mse"] <- "mean_theta_mse"
+names(reconstruction_ht_errors)[names(reconstruction_ht_errors) == "active_pixels"] <- "mean_active_pixels"
+
+dt_table(
+  reconstruction_ht_errors,
+  caption = "HT errors for CSSA / ESPRIT reconstruction comparison",
+  page_length = 3L
+)
+```

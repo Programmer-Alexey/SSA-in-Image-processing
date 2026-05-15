@@ -1,0 +1,184 @@
+### Оценка параметров методом ESPRIT
+
+```{r, include=FALSE}
+setup_candidates <- c(
+  "00_setup.Rmd",
+  file.path("cssa esprit", "00_setup.Rmd")
+)
+if (!exists("cssa_esprit_setup_loaded", inherits = FALSE)) {
+  setup_file <- setup_candidates[file.exists(setup_candidates)][1L]
+  if (is.na(setup_file)) {
+    stop("Cannot find 00_setup.Rmd")
+  }
+  setup_code <- tempfile(fileext = ".R")
+  knitr::purl(setup_file, output = setup_code, quiet = TRUE)
+  source(setup_code, local = knitr::knit_global())
+}
+```
+
+```{r, include=FALSE}
+wrap_frequency <- function(x) {
+  ((x + 0.5) %% 1) - 0.5
+}
+
+row_dft_by_index <- function(signal_index, noise_vec) {
+  series_length <- length(noise_vec)
+  row <- matrix(0, nrow = 1L, ncol = series_length)
+  row[1L, signal_index] <- 1
+  row <- row + noise_vec
+
+  list(
+    z = dft(row)[1L, ],
+    true_frequency = (signal_index - 1L) / series_length,
+    signal_index = signal_index
+  )
+}
+
+esprit_frequency_once <- function(signal_index, noise_vec) {
+  row_dft <- row_dft_by_index(signal_index, noise_vec)
+
+  fit <- Rssa::ssa(row_dft$z, kind = "cssa", svd.method = "svd")
+  pars <- Rssa::parestimate(
+    fit,
+    groups = list(signal = 1L),
+    method = "esprit",
+    normalize.roots = FALSE
+  )
+
+  root <- pars$roots[1L]
+  dft_frequency <- pars$frequencies[1L]
+  frequency <- wrap_frequency(-dft_frequency)
+
+  data.frame(
+    signal_index = row_dft$signal_index,
+    true_frequency = row_dft$true_frequency,
+    dft_frequency = dft_frequency,
+    estimated_frequency = frequency,
+    estimated_frequency_aligned = row_dft$true_frequency +
+      wrap_frequency(frequency - row_dft$true_frequency),
+    frequency_error = wrap_frequency(frequency - row_dft$true_frequency),
+    root_modulus = Mod(root),
+    root_re = Re(root),
+    root_im = Im(root)
+  )
+}
+
+check_parestimate_complex <- function(signal_index = 18L,
+                                      series_length = 100L,
+                                      tol = 1e-8) {
+  out <- esprit_frequency_once(
+    signal_index = signal_index,
+    noise_vec = rep(0, series_length)
+  )
+  out$ok <- abs(out$frequency_error) < tol && abs(out$root_modulus - 1) < tol
+  out
+}
+
+sort_by_frequency <- function(df) {
+  df[order(df$true_frequency), ]
+}
+
+esprit_frequency_dependency <- function(series_length = 100L,
+                                        signal_indices = seq_len(floor(series_length / 2)),
+                                        sample_size = 100L,
+                                        sigma = 0.2,
+                                        seed = 1111L) {
+  set.seed(seed)
+
+  samples <- do.call(rbind, lapply(seq_len(sample_size), function(rep_id) {
+    noise_vec <- rnorm(series_length, mean = 0, sd = sigma)
+    rows <- lapply(signal_indices, function(signal_index) {
+      out <- esprit_frequency_once(signal_index, noise_vec)
+      out$rep <- rep_id
+      out
+    })
+    do.call(rbind, rows)
+  }))
+
+  samples$rho_mse <- (samples$root_modulus - 1)^2
+  samples$omega_mse <- samples$frequency_error^2
+
+  mean_df <- aggregate(
+    cbind(rho_mse, omega_mse, frequency_error) ~ signal_index + true_frequency,
+    data = samples,
+    FUN = mean
+  )
+  sd_df <- aggregate(
+    frequency_error ~ signal_index + true_frequency,
+    data = samples,
+    FUN = stats::sd
+  )
+  counts <- aggregate(rep ~ signal_index + true_frequency, data = samples, FUN = length)
+
+  data.frame(
+    signal_index = mean_df$signal_index,
+    true_frequency = mean_df$true_frequency,
+    rho_mse = mean_df$rho_mse,
+    omega_mse = mean_df$omega_mse,
+    mean_frequency_error = mean_df$frequency_error,
+    sd_frequency_error = sd_df$frequency_error,
+    n_samples = counts$rep
+  ) |>
+    sort_by_frequency()
+}
+
+plot_esprit_frequency_dependency <- function(df) {
+  old_par <- par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+  on.exit(par(old_par))
+
+  rho_ylim <- c(0, 1e-6)
+  omega_ylim <- c(0, 1e-6)
+
+  plot(
+    df$true_frequency,
+    df$rho_mse,
+    ylim = rho_ylim,
+    type = "b",
+    pch = 19,
+    col = "grey20",
+    xlab = expression(omega),
+    ylab = expression(MSE(hat(rho))),
+    main = expression(MSE(hat(rho)))
+  )
+  abline(stats::lm(rho_mse ~ true_frequency, data = df), col = "firebrick", lty = 2)
+
+  plot(
+    df$true_frequency,
+    df$omega_mse,
+    ylim = omega_ylim,
+    type = "b",
+    pch = 19,
+    col = "grey20",
+    xlab = expression(omega),
+    ylab = expression(MSE(hat(omega))),
+    main = expression(MSE(hat(omega)))
+  )
+  abline(stats::lm(omega_mse ~ true_frequency, data = df), col = "firebrick", lty = 2)
+}
+```
+
+```{r, include=FALSE}
+parestimate_complex_check <- check_parestimate_complex()
+stopifnot(parestimate_complex_check$ok)
+parestimate_complex_check
+```
+
+```{r, fig.width=10, fig.height=4}
+series_length <- 100L
+sample_size <- 100L
+sigma_noise <- 0.05
+frequency_grid <- seq(0.0, 0.48, by = 0.02)
+signal_indices <- unique(round(frequency_grid * series_length) + 1L)
+
+esprit_dependency <- esprit_frequency_dependency(
+  series_length = series_length,
+  signal_indices = signal_indices,
+  sample_size = sample_size,
+  sigma = sigma_noise,
+  seed = 1111L
+)
+
+plot_esprit_frequency_dependency(esprit_dependency)
+
+dt_table(esprit_dependency, caption = "ESPRIT estimates", page_length = 10L)
+```

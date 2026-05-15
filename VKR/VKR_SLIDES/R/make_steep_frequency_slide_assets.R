@@ -37,10 +37,10 @@ if (!file.exists(samples_path)) {
 
 samples <- read.csv(samples_path, stringsAsFactors = FALSE)
 steep <- subset(samples, config_id == "steep_full")
-steep$omega_positive <- abs(steep$omega_wrapped)
+steep$omega_normalized <- abs(steep$omega_wrapped) / (2 * pi)
 
 first_rows <- aggregate(
-  cbind(argmax_error, mse, near_mass_share, active_share_0001, active_share_01) ~ row_id + true_col + omega_positive,
+  cbind(argmax_error, mse, near_mass_share, active_share_0001, active_share_01) ~ row_id + true_col + omega_normalized,
   data = steep,
   FUN = mean
 )
@@ -49,7 +49,7 @@ first_rows <- first_rows[first_rows$row_id %in% seq(1L, 19L, by = 2L), ]
 
 slide_table <- data.frame(
   "$j$" = as.character(first_rows$true_col),
-  "$\\omega_j$" = first_rows$omega_positive,
+  "$\\omega_j$" = first_rows$omega_normalized,
   "$|\\hat j-j|$" = first_rows$argmax_error,
   check.names = FALSE
 )
@@ -81,42 +81,42 @@ write_df_tex <- function(df, file, digits = 3L) {
 write_df_tex(slide_table, file.path(tables_dir, "steep_full_first_rows_frequency.tex"), digits = 3L)
 
 by_frequency <- aggregate(
-  cbind(argmax_error, mse) ~ true_col + omega_positive,
+  cbind(argmax_error, mse) ~ true_col + omega_normalized,
   data = steep,
   FUN = mean
 )
-by_frequency <- by_frequency[order(by_frequency$omega_positive), ]
+by_frequency <- by_frequency[order(by_frequency$omega_normalized), ]
 write.csv(by_frequency, file.path(tables_dir, "steep_full_frequency_by_row.csv"), row.names = FALSE)
 
 pdf(file.path(images_dir, "steep_full_frequency_localization.pdf"), width = 5.3, height = 3.5)
 plot(
-  by_frequency$omega_positive,
+  by_frequency$omega_normalized,
   by_frequency$argmax_error,
   type = "b",
   pch = 19,
   col = "#1f4e79",
-  xlab = expression(omega[j]),
+  xlab = expression(omega[j] == (j - 1) / N),
   ylab = expression(abs(hat(j) - j)),
   main = "Mean localization error"
 )
 grid(col = "gray85")
-abline(lm(argmax_error ~ omega_positive, data = by_frequency), col = "red", lwd = 2)
+abline(lm(argmax_error ~ omega_normalized, data = by_frequency), col = "red", lwd = 2)
 dev.off()
 
 png(file.path(images_dir, "steep_full_frequency_localization.png"), width = 1100, height = 760, res = 180)
 plot(
-  by_frequency$omega_positive,
+  by_frequency$omega_normalized,
   by_frequency$argmax_error,
   type = "b",
   pch = 19,
   col = "#1f4e79",
-  xlab = expression(omega[j]),
+  xlab = expression(omega[j] == (j - 1) / N),
   ylab = expression(abs(hat(j) - j)),
   main = "Mean localization error"
 )
 grid(col = "gray85")
-abline(lm(argmax_error ~ omega_positive, data = by_frequency), col = "red", lwd = 2)
+abline(lm(argmax_error ~ omega_normalized, data = by_frequency), col = "red", lwd = 2)
 dev.off()
 
-cat("Р“РѕС‚РѕРІРѕ: steep_full_first_rows_frequency.tex Рё steep_full_frequency_localization.pdf\n")
+cat("Р“РѕС‚РѕРІРѕ: steep_full_first_rows_frequency.tex Рё steep_full_frequency_localization.pdf СЃ РЅРѕСЂРјРёСЂРѕРІР°РЅРЅРѕР№ С‡Р°СЃС‚РѕС‚РѕР№\n")
 

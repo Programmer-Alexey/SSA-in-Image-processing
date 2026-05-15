@@ -4,7 +4,15 @@ app_dir <- if (!is.null(app_file)) {
 } else {
   getwd()
 }
-source(file.path(dirname(app_dir), "common.R"), local = TRUE)
+common_candidates <- unique(c(
+  file.path(dirname(app_dir), "common.R"),
+  file.path(getwd(), "interactive_graphics", "common.R")
+))
+common_path <- common_candidates[file.exists(common_candidates)][1]
+if (is.na(common_path) || !nzchar(common_path)) {
+  stop("Не удалось найти interactive_graphics/common.R.")
+}
+source(common_path, local = TRUE)
 
 ui <- shiny::fluidPage(
   shiny::titlePanel("Зависимость ошибки от частоты"),
@@ -12,6 +20,13 @@ ui <- shiny::fluidPage(
     shiny::sidebarPanel(
       shiny::numericInput("freq_sigma", "Уровень шума", value = 0.2, min = 0, step = 0.01),
       shiny::numericInput("freq_n_rep", "Размер выборки", value = 1, min = 1, step = 1),
+      shiny::numericInput(
+        "freq_n_workers",
+        "Число потоков",
+        value = available_worker_count(),
+        min = 1,
+        step = 1
+      ),
       shiny::numericInput("freq_n", "Размер вектора", value = 100, min = 8, step = 1),
       shiny::numericInput("freq_seed", "Seed", value = 1111, min = 1, step = 1),
       shiny::actionButton("run_frequency", "Построить графики")
@@ -37,7 +52,8 @@ server <- function(input, output, session) {
         n = as.integer(input$freq_n),
         n_rep = as.integer(input$freq_n_rep),
         sigma = as.numeric(input$freq_sigma),
-        seed = as.integer(input$freq_seed)
+        seed = as.integer(input$freq_seed),
+        n_workers = input$freq_n_workers
       )
       incProgress(0.8, detail = "Агрегация")
       list(

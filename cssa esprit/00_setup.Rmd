@@ -1,0 +1,129 @@
+```{r, include=FALSE}
+if (!exists("cssa_esprit_setup_loaded", inherits = FALSE)) {
+find_project_root <- function() {
+  start <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
+  current <- start
+
+  repeat {
+    if (file.exists(file.path(current, "ssa-based methods", "cssa-transform.r"))) {
+      return(current)
+    }
+
+    parent <- dirname(current)
+    if (identical(parent, current)) {
+      stop("Cannot find project root with ssa-based methods/cssa-transform.r")
+    }
+    current <- parent
+  }
+}
+
+project_root <- find_project_root()
+options(ssa_image_project_root = project_root)
+
+.libPaths(.libPaths()[
+  normalizePath(.libPaths(), winslash = "/", mustWork = FALSE) !=
+    normalizePath(file.path(project_root, ".r-local-lib"), winslash = "/", mustWork = FALSE)
+])
+
+if (!requireNamespace("DT", quietly = TRUE)) {
+  stop("Missing package: DT")
+}
+
+source(file.path(project_root, "ssa-based methods", "cssa-transform.r"))
+source(file.path(project_root, "hough transform", "hough_transform.r"))
+
+dt_table <- function(x, caption = NULL, page_length = 10L) {
+  DT::datatable(
+    x,
+    caption = caption,
+    rownames = FALSE,
+    options = list(
+      pageLength = page_length,
+      scrollX = TRUE
+    )
+  )
+}
+
+clip01 <- function(m) {
+  m <- as.matrix(m)
+  m[!is.finite(m)] <- 0
+  m[m < 0.001] <- 0
+  m[m > 0.99] <- 1
+  m
+}
+
+cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row", clip = TRUE) {
+  cleaned <- switch(
+    method,
+    "col.col" = m |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re(),
+    "col.row" = m |> dft() |> cssa.col(num.line = num_of_lines) |> idft.row() |> Re(),
+    "row.col" = m |> dft() |> cssa.row(num.line = num_of_lines) |> idft.col() |> Re(),
+    "row.row" = m |> dft() |> cssa.row(num.line = num_of_lines) |> idft.row() |> Re(),
+    stop("Unknown CSSA method: ", method)
+  )
+
+  if (clip) clip01(cleaned) else cleaned
+}
+
+make_line_matrix <- function(n_row = 100L, n_col = 100L, a = 2, b = -1) {
+  matrix(0, nrow = n_row, ncol = n_col) |>
+    add.line(a = a, b = b)
+}
+
+convert_ab_to_rho_theta <- function(a, b) {
+  theta <- atan2(1, -a)
+  rho <- b / sqrt(a^2 + 1)
+
+  if (theta < 0) {
+    theta <- theta + pi
+    rho <- -rho
+  }
+
+  c(rho = rho, theta = theta)
+}
+
+find_k_max <- function(acc, k, qrho, qtheta, suppress = FALSE, window = 6L) {
+  acc_copy <- acc
+  maxima <- vector("list", k)
+
+  for (i in seq_len(k)) {
+    idx <- which(acc_copy == max(acc_copy), arr.ind = TRUE)[1L, ]
+    maxima[[i]] <- c(rho = qrho[idx[1L]], theta = qtheta[idx[2L]])
+
+    if (suppress) {
+      rows <- max(1L, idx[1L] - window):min(nrow(acc_copy), idx[1L] + window)
+      cols <- max(1L, idx[2L] - window):min(ncol(acc_copy), idx[2L] + window)
+      acc_copy[rows, cols] <- 0
+    } else {
+      acc_copy[idx[1L], idx[2L]] <- 0
+    }
+  }
+
+  out <- do.call(rbind, maxima)
+  colnames(out) <- c("rho", "theta")
+  out
+}
+
+line_parameter_error <- function(true_line, pred_line) {
+  theta_error <- function(x, y) atan2(sin(x - y), cos(x - y))^2
+
+  rho <- true_line["rho"]
+  theta <- true_line["theta"]
+  pred_rho <- pred_line["rho"]
+  pred_theta <- pred_line["theta"]
+
+  direct <- c(
+    rho_mse = unname((rho - pred_rho)^2),
+    theta_mse = unname(theta_error(theta, pred_theta))
+  )
+  flipped <- c(
+    rho_mse = unname((rho + pred_rho)^2),
+    theta_mse = unname(theta_error(theta, pred_theta + pi))
+  )
+
+  if (sum(direct) <= sum(flipped)) direct else flipped
+}
+
+cssa_esprit_setup_loaded <- TRUE
+}
+```
