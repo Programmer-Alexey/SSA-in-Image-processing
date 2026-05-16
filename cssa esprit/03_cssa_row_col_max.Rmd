@@ -348,7 +348,7 @@ parameter_configs <- data.frame(
   stringsAsFactors = FALSE
 )
 
-comparison_n_rep <- 3L
+comparison_n_rep <- 50
 comparison_sigmas <- c(0.05, 0.2)
 comparison_threshold_multipliers <- c(1, 2)
 comparison_max_row_k <- 1L

@@ -126,6 +126,9 @@ ui <- shiny::fluidPage(
           shiny::h4("Сводка по ошибкам"),
           shiny::tableOutput("exp_summary_table"),
           shiny::hr(),
+          shiny::h4("Идеальная ошибка из-за дискретизации"),
+          shiny::tableOutput("exp_ideal_table"),
+          shiny::hr(),
           shiny::tabsetPanel(
             shiny::tabPanel(
               "Mean dr",
@@ -350,7 +353,12 @@ server <- function(input, output, session) {
       incProgress(0.9, detail = "Сводка")
       list(
         samples = samples,
-        summary = summarise_ht_errors_app(samples)
+        summary = summarise_ht_errors_app(samples),
+        ideal = ideal_discretization_table_app(
+          cfgs,
+          rho_step_ht = input$exp_rho_step,
+          theta_step_ht = input$exp_theta_step
+        )
       )
     })
   })
@@ -358,6 +366,11 @@ server <- function(input, output, session) {
   output$exp_summary_table <- shiny::renderTable({
     shiny::req(experiment_result())
     experiment_result()$summary
+  }, digits = 6)
+
+  output$exp_ideal_table <- shiny::renderTable({
+    shiny::req(experiment_result())
+    experiment_result()$ideal
   }, digits = 6)
 
   output$exp_mean_dr <- shiny::renderTable({

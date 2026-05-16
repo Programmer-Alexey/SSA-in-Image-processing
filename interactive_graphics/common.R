@@ -434,6 +434,88 @@ compute_err <- function(true, pred) {
   c(dr = unname(dr_total), dtheta = unname(dtheta_total))
 }
 
+compute_err_by_line <- function(true, pred) {
+  true <- as.matrix(true)
+  pred <- as.matrix(pred)
+
+  if (ncol(true) != 2 || ncol(pred) != 2) {
+    stop("true and pred must have two columns: rho and theta")
+  }
+  if (nrow(true) != nrow(pred)) {
+    stop("true and pred must contain the same number of lines")
+  }
+
+  pair_err <- function(tr, tt, pr, pt) {
+    tr <- unname(tr)
+    tt <- unname(tt)
+    pr <- unname(pr)
+    pt <- unname(pt)
+
+    pt_alt <- (pt + pi) %% (2 * pi)
+    dtheta <- atan2(sin(tt - pt), cos(tt - pt))^2
+    dtheta_alt <- atan2(sin(tt - pt_alt), cos(tt - pt_alt))^2
+
+    loss_1 <- (tr - pr)^2 + dtheta
+    loss_2 <- (tr + pr)^2 + dtheta_alt
+
+    if (loss_2 < loss_1) {
+      c(dr = (tr + pr)^2, dtheta = dtheta_alt, total = loss_2)
+    } else {
+      c(dr = (tr - pr)^2, dtheta = dtheta, total = loss_1)
+    }
+  }
+
+  all_perms <- function(v) {
+    if (length(v) == 1L) {
+      return(matrix(v, nrow = 1L))
+    }
+    out <- lapply(seq_along(v), function(i) {
+      cbind(v[i], all_perms(v[-i]))
+    })
+    do.call(rbind, out)
+  }
+
+  n_lines <- nrow(true)
+  pair_errors <- vector("list", n_lines * n_lines)
+  cost <- matrix(0, nrow = n_lines, ncol = n_lines)
+  for (i in seq_len(n_lines)) {
+    for (j in seq_len(n_lines)) {
+      cur <- pair_err(true[i, 1], true[i, 2], pred[j, 1], pred[j, 2])
+      pair_errors[[(i - 1L) * n_lines + j]] <- cur
+      cost[i, j] <- cur["total"]
+    }
+  }
+
+  if (n_lines == 1L) {
+    best_perm <- 1L
+  } else {
+    perm_mat <- all_perms(seq_len(n_lines))
+    costs <- apply(perm_mat, 1L, function(cur_perm) {
+      sum(cost[cbind(seq_len(n_lines), cur_perm)])
+    })
+    best_perm <- perm_mat[which.min(costs), ]
+  }
+
+  rows <- lapply(seq_len(n_lines), function(i) {
+    cur <- pair_errors[[(i - 1L) * n_lines + best_perm[i]]]
+    data.frame(
+      line_index = i,
+      pred_index = best_perm[i],
+      true_rho = true[i, 1],
+      true_theta = true[i, 2],
+      pred_rho = pred[best_perm[i], 1],
+      pred_theta = pred[best_perm[i], 2],
+      dr = unname(cur["dr"]),
+      dtheta = unname(cur["dtheta"]),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  out <- dplyr::bind_rows(rows)
+  rownames(out) <- NULL
+  out
+}
+
 parse_line_text <- function(text, expected_n = NULL) {
   lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
   lines <- trimws(lines)
@@ -465,6 +547,78 @@ parse_line_text <- function(text, expected_n = NULL) {
     stop("Ожидалось ", expected_n, " прямых, а получено ", nrow(out), ".")
   }
   out
+}
+
+split_custom_config_blocks <- function(text) {
+  raw_lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
+  blocks <- list()
+  current <- character(0)
+
+  for (line in raw_lines) {
+    line <- trimws(line)
+    if (!nzchar(line)) {
+      if (length(current) > 0L) {
+        blocks[[length(blocks) + 1L]] <- current
+        current <- character(0)
+      }
+    } else {
+      current <- c(current, line)
+    }
+  }
+
+  if (length(current) > 0L) {
+    blocks[[length(blocks) + 1L]] <- current
+  }
+  blocks
+}
+
+line_config_ids <- function(lines_df) {
+  lines_df <- as.data.frame(lines_df)
+  if (!"intensity" %in% names(lines_df)) {
+    lines_df$intensity <- 1
+  }
+  sprintf("(%g, %g, %g)", lines_df$a, lines_df$b, lines_df$intensity)
+}
+
+custom_config_id <- function(lines_df) {
+  paste(line_config_ids(lines_df), collapse = "; ")
+}
+
+parse_custom_config_list <- function(text, num_lines, n_row, n_col) {
+  num_lines <- max(1L, as.integer(num_lines)[1L])
+  blocks <- split_custom_config_blocks(text)
+  if (length(blocks) == 0L) {
+    stop("РЎРїРёСЃРѕРє РїСЂСЏРјС‹С… РїСѓСЃС‚.")
+  }
+
+  if (length(blocks) == 1L) {
+    lines_df <- parse_line_text(paste(blocks[[1L]], collapse = "\n"))
+    if (nrow(lines_df) %% num_lines != 0L) {
+      stop(
+        "Р§РёСЃР»Рѕ СЃС‚СЂРѕРє РІ custom-РєРѕРЅС„РёРіСѓСЂР°С†РёРё РґРѕР»Р¶РЅРѕ РґРµР»РёС‚СЊСЃСЏ РЅР° РєРѕР»РёС‡РµСЃС‚РІРѕ РїСЂСЏРјС‹С…: ",
+        num_lines,
+        "."
+      )
+    }
+    idx <- split(seq_len(nrow(lines_df)), ceiling(seq_len(nrow(lines_df)) / num_lines))
+    blocks <- lapply(idx, function(i) lines_df[i, , drop = FALSE])
+  } else {
+    blocks <- lapply(blocks, function(block) {
+      parse_line_text(paste(block, collapse = "\n"), expected_n = num_lines)
+    })
+  }
+
+  n_configs <- length(blocks)
+  lapply(seq_along(blocks), function(i) {
+    config_label <- custom_config_id(blocks[[i]])
+    make_custom_config(
+      blocks[[i]],
+      n_row = n_row,
+      n_col = n_col,
+      config_id = config_label,
+      description = config_label
+    )
+  })
 }
 
 standard_single_configs <- function(n_row, n_col) {
@@ -516,8 +670,12 @@ build_config_list <- function(num_lines, n_row, n_col, use_standard_single, line
     return(standard_single_configs(n_row = n_row, n_col = n_col))
   }
 
-  lines_df <- parse_line_text(line_text, expected_n = num_lines)
-  list(make_custom_config(lines_df, n_row = n_row, n_col = n_col))
+  parse_custom_config_list(
+    text = line_text,
+    num_lines = num_lines,
+    n_row = n_row,
+    n_col = n_col
+  )
 }
 
 config_to_matrix <- function(cfg) {
@@ -697,6 +855,7 @@ run_ht_repetition_app <- function(
   max_row_k = 1L
 ) {
   set.seed(seed)
+  num_of_lines <- nrow(cfg$lines)
   detectors <- available_detectors(num_of_lines = num_of_lines, max_row_k = max_row_k)
   base_matrix <- config_to_matrix(cfg)
   true_line <- config_true_params(cfg)
@@ -709,6 +868,7 @@ run_ht_repetition_app <- function(
   }
 
   weighted <- identical(ht_type, "weighted")
+  line_ids <- line_config_ids(cfg$lines)
   rows <- vector("list", length(method_names))
   for (method_i in seq_along(method_names)) {
     method_name <- method_names[[method_i]]
@@ -741,25 +901,30 @@ run_ht_repetition_app <- function(
       window = 6L
     )
 
-    err <- compute_err(true_line, pred_line)
+    err_by_line <- compute_err_by_line(true_line, pred_line)
+    cur_line_ids <- line_ids[err_by_line$line_index]
 
     rows[[method_i]] <- data.frame(
-      config_id = cfg$config_id,
-      description = cfg$description,
+      config_id = cur_line_ids,
+      parent_config_id = cfg$config_id,
+      description = cur_line_ids,
+      line_index = err_by_line$line_index,
+      pred_index = err_by_line$pred_index,
+      num_lines = num_of_lines,
       n_col = cfg$n_col,
       n_row = cfg$n_row,
       sigma = sigma_noise,
       rep = rep_i,
       method = method_name,
-      true_rho = paste(round(true_line[, 1], 6), collapse = "; "),
-      true_theta = paste(round(true_line[, 2], 6), collapse = "; "),
-      pred_rho = paste(round(pred_line[, 1], 6), collapse = "; "),
-      pred_theta = paste(round(pred_line[, 2], 6), collapse = "; "),
+      true_rho = err_by_line$true_rho,
+      true_theta = err_by_line$true_theta,
+      pred_rho = err_by_line$pred_rho,
+      pred_theta = err_by_line$pred_theta,
       active_pixels = ht_result$active_pixels,
       active_weight = ht_result$active_weight,
       threshold_value = threshold_info$threshold_value,
-      dr = as.numeric(err["dr"]),
-      dtheta = as.numeric(err["dtheta"]),
+      dr = err_by_line$dr,
+      dtheta = err_by_line$dtheta,
       stringsAsFactors = FALSE
     )
   }
@@ -868,6 +1033,9 @@ summarise_ht_errors_app <- function(ht_error_samples) {
   ht_error_samples |>
     dplyr::group_by(config_id, description, method) |>
     dplyr::summarise(
+      parent_config_id = paste(unique(parent_config_id), collapse = " | "),
+      line_index = dplyr::first(line_index),
+      num_lines = dplyr::first(num_lines),
       mean_dr = mean(dr),
       median_dr = median(dr),
       mean_dtheta = mean(dtheta),
@@ -912,6 +1080,37 @@ ideal_discretization_error <- function(true_line, rho_step_ht, theta_step_ht) {
     baseline_dr = baseline_dr,
     baseline_dtheta = baseline_dtheta
   )
+}
+
+ideal_discretization_table_app <- function(config_list, rho_step_ht, theta_step_ht) {
+  rows <- lapply(config_list, function(cfg) {
+    true_line <- config_true_params(cfg)
+    pred_line <- cbind(
+      rho = round(true_line[, "rho"] / rho_step_ht) * rho_step_ht,
+      theta = round(true_line[, "theta"] / theta_step_ht) * theta_step_ht
+    )
+    pred_line[, "theta"] <- pmin(pmax(pred_line[, "theta"], 0), pi)
+
+    err_by_line <- compute_err_by_line(true_line, pred_line)
+    line_ids <- line_config_ids(cfg$lines)
+
+    data.frame(
+      config_id = line_ids[err_by_line$line_index],
+      parent_config_id = cfg$config_id,
+      line_index = err_by_line$line_index,
+      true_rho = err_by_line$true_rho,
+      true_theta = err_by_line$true_theta,
+      ideal_rho = err_by_line$pred_rho,
+      ideal_theta = err_by_line$pred_theta,
+      ideal_dr = err_by_line$dr,
+      ideal_dtheta = err_by_line$dtheta,
+      baseline_dr = pmax(err_by_line$dr, (rho_step_ht / 2)^2),
+      baseline_dtheta = pmax(err_by_line$dtheta, (theta_step_ht / 2)^2),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  dplyr::bind_rows(rows)
 }
 
 find_big_error_rep_app <- function(
