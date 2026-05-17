@@ -92,11 +92,23 @@ normalize_worker_count <- function(n_workers, n_tasks = Inf) {
 
 make_app_cluster <- function(n_workers) {
   cl <- parallel::makeCluster(as.integer(n_workers))
-  parallel::clusterCall(cl, function(path) {
+  initialized <- FALSE
+  on.exit({
+    if (!initialized) {
+      try(parallel::stopCluster(cl), silent = TRUE)
+    }
+  }, add = TRUE)
+
+  init_worker <- function(path) {
     options(interactive_graphics.common_path = path)
     source(path, local = globalenv())
     NULL
-  }, common_path)
+  }
+  for (worker_i in seq_along(cl)) {
+    parallel::clusterCall(cl[worker_i], init_worker, common_path)
+  }
+
+  initialized <- TRUE
   cl
 }
 
@@ -129,9 +141,22 @@ normalize_xtab <- function(tab) {
   }))
 }
 
-make_line_image <- function(n_row, n_col, a, b, intensity = 1) {
+normalize_line_method <- function(line_method = "bresenham") {
+  if (length(line_method) == 0L || is.na(line_method[1L])) {
+    return("bresenham")
+  }
+
+  line_method <- as.character(line_method[1L])
+  if (!line_method %in% c("bresenham", "default")) {
+    return("bresenham")
+  }
+
+  line_method
+}
+
+make_line_image <- function(n_row, n_col, a, b, intensity = 1, line_method = "bresenham") {
   matrix(0, nrow = n_row, ncol = n_col) |>
-    add.line(a = a, b = b, intensity = intensity)
+    add.line(a = a, b = b, method = normalize_line_method(line_method), intensity = intensity)
 }
 
 cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
@@ -260,13 +285,20 @@ wiener_denoise <- function(m, ksize = 5L) {
 available_detectors <- function(num_of_lines,
                                 include_quantile = FALSE,
                                 include_esprit = TRUE,
-                                max_row_k = 1L) {
+                                max_row_k = 1L,
+                                cssa_components = num_of_lines) {
+  cssa_components <- suppressWarnings(as.integer(cssa_components)[1L])
+  if (!is.finite(cssa_components) || is.na(cssa_components)) {
+    cssa_components <- num_of_lines
+  }
+  cssa_components <- max(1L, cssa_components)
+
   detectors <- list(
     cssa_row_row = function(m, sigma_noise) {
-      cssa_denoise(m, num_of_lines = num_of_lines, method = "row.row")
+      cssa_denoise(m, num_of_lines = cssa_components, method = "row.row")
     },
     cssa_col_row = function(m, sigma_noise) {
-      cssa_denoise(m, num_of_lines = num_of_lines, method = "col.row")
+      cssa_denoise(m, num_of_lines = cssa_components, method = "col.row")
     },
     max_row = function(m, sigma_noise) {
       max_row_denoise(m, k = max_row_k)
@@ -296,10 +328,10 @@ available_detectors <- function(num_of_lines,
       detectors,
       list(
         cssa_row_row_esprit = function(m, sigma_noise) {
-          esprit_cssa_denoise(m, num_of_lines = num_of_lines, method = "row.row")
+          esprit_cssa_denoise(m, num_of_lines = cssa_components, method = "row.row")
         },
         cssa_col_row_esprit = function(m, sigma_noise) {
-          esprit_cssa_denoise(m, num_of_lines = num_of_lines, method = "col.row")
+          esprit_cssa_denoise(m, num_of_lines = cssa_components, method = "col.row")
         }
       ),
       after = 2L
@@ -678,13 +710,15 @@ build_config_list <- function(num_lines, n_row, n_col, use_standard_single, line
   )
 }
 
-config_to_matrix <- function(cfg) {
+config_to_matrix <- function(cfg, line_method = "bresenham") {
+  line_method <- normalize_line_method(line_method)
   out <- matrix(0, nrow = cfg$n_row, ncol = cfg$n_col)
   for (i in seq_len(nrow(cfg$lines))) {
     out <- add.line(
       out,
       a = cfg$lines$a[i],
       b = cfg$lines$b[i],
+      method = line_method,
       intensity = cfg$lines$intensity[i]
     )
   }
@@ -699,8 +733,8 @@ config_true_params <- function(cfg) {
   out
 }
 
-draw_config_preview <- function(config_list) {
-  mats <- lapply(config_list, config_to_matrix)
+draw_config_preview <- function(config_list, line_method = "bresenham") {
+  mats <- lapply(config_list, config_to_matrix, line_method = line_method)
   labels <- vapply(config_list, function(cfg) {
     if (nrow(cfg$lines) == 1L) {
       sprintf("%s\n(a = %.2f, b = %.2f)", cfg$config_id, cfg$lines$a[1], cfg$lines$b[1])
@@ -721,7 +755,8 @@ threshold_processed_matrix <- function(
   threshold_value = 0.1,
   threshold_quantile_p = 0.9,
   threshold_multiplier = 1,
-  residual_sd = NULL
+  residual_sd = NULL,
+  cssa_components = num_of_lines
 ) {
   processed_matrix <- clip01(processed_matrix)
 
@@ -761,7 +796,7 @@ threshold_processed_matrix <- function(
   }
 
   if (is.null(residual_sd)) {
-    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = num_of_lines, method = "row.row")
+    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = cssa_components, method = "row.row")
     residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
   }
   thr <- as.numeric(threshold_multiplier) * residual_sd
@@ -852,18 +887,28 @@ run_ht_repetition_app <- function(
   threshold_quantile_p,
   threshold_multiplier,
   threshold_method_names,
-  max_row_k = 1L
+  max_row_k = 1L,
+  cssa_components = NULL,
+  line_method = "bresenham"
 ) {
   set.seed(seed)
   num_of_lines <- nrow(cfg$lines)
-  detectors <- available_detectors(num_of_lines = num_of_lines, max_row_k = max_row_k)
-  base_matrix <- config_to_matrix(cfg)
+  if (is.null(cssa_components)) {
+    cssa_components <- num_of_lines
+  }
+  cssa_components <- max(1L, as.integer(cssa_components)[1L])
+  detectors <- available_detectors(
+    num_of_lines = num_of_lines,
+    max_row_k = max_row_k,
+    cssa_components = cssa_components
+  )
+  base_matrix <- config_to_matrix(cfg, line_method = line_method)
   true_line <- config_true_params(cfg)
   noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
   threshold_enabled <- !identical(threshold_mode, "none") && length(threshold_method_names) > 0L
   residual_sd <- NULL
   if (threshold_enabled && identical(threshold_mode, "auto_rowrow_sd")) {
-    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = num_of_lines, method = "row.row")
+    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = cssa_components, method = "row.row")
     residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
   }
 
@@ -882,7 +927,8 @@ run_ht_repetition_app <- function(
       threshold_value = threshold_value,
       threshold_quantile_p = threshold_quantile_p,
       threshold_multiplier = threshold_multiplier,
-      residual_sd = residual_sd
+      residual_sd = residual_sd,
+      cssa_components = cssa_components
     )
 
     ht_result <- make_accumulator_generic(
@@ -911,6 +957,7 @@ run_ht_repetition_app <- function(
       line_index = err_by_line$line_index,
       pred_index = err_by_line$pred_index,
       num_lines = num_of_lines,
+      cssa_components = cssa_components,
       n_col = cfg$n_col,
       n_row = cfg$n_row,
       sigma = sigma_noise,
@@ -948,9 +995,16 @@ run_ht_experiment_app <- function(
   threshold_method_names = NULL,
   progress = NULL,
   n_workers = 1L,
-  max_row_k = 1L
+  max_row_k = 1L,
+  cssa_components = num_of_lines,
+  line_method = "bresenham"
 ) {
-  detectors <- available_detectors(num_of_lines = num_of_lines, max_row_k = max_row_k)
+  cssa_components <- max(1L, as.integer(cssa_components)[1L])
+  detectors <- available_detectors(
+    num_of_lines = num_of_lines,
+    max_row_k = max_row_k,
+    cssa_components = cssa_components
+  )
   method_names <- intersect(method_names, names(detectors))
   if (length(method_names) == 0L) {
     stop("Не выбрано ни одного доступного метода.")
@@ -984,7 +1038,9 @@ run_ht_experiment_app <- function(
     threshold_quantile_p = threshold_quantile_p,
     threshold_multiplier = threshold_multiplier,
     threshold_method_names = threshold_method_names,
-    max_row_k = max_row_k
+    max_row_k = max_row_k,
+    cssa_components = cssa_components,
+    line_method = line_method
   )
 
   if (n_workers > 1L) {
@@ -1036,6 +1092,7 @@ summarise_ht_errors_app <- function(ht_error_samples) {
       parent_config_id = paste(unique(parent_config_id), collapse = " | "),
       line_index = dplyr::first(line_index),
       num_lines = dplyr::first(num_lines),
+      cssa_components = dplyr::first(cssa_components),
       mean_dr = mean(dr),
       median_dr = median(dr),
       mean_dtheta = mean(dtheta),
@@ -1130,18 +1187,25 @@ find_big_error_rep_app <- function(
   threshold_multiplier,
   factor_threshold,
   ideal,
-  max_row_k = 1L
+  max_row_k = 1L,
+  cssa_components = num_of_lines,
+  line_method = "bresenham"
 ) {
   set.seed(seed)
-  detectors <- available_detectors(num_of_lines = num_of_lines, max_row_k = max_row_k)
-  base_matrix <- config_to_matrix(cfg)
+  cssa_components <- max(1L, as.integer(cssa_components)[1L])
+  detectors <- available_detectors(
+    num_of_lines = num_of_lines,
+    max_row_k = max_row_k,
+    cssa_components = cssa_components
+  )
+  base_matrix <- config_to_matrix(cfg, line_method = line_method)
   true_line <- config_true_params(cfg)
   weighted <- identical(ht_type, "weighted")
 
   noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
   residual_sd <- NULL
   if (identical(threshold_mode, "auto_rowrow_sd")) {
-    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = num_of_lines, method = "row.row")
+    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = cssa_components, method = "row.row")
     residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
   }
   processed_matrix <- detectors[[method_name]](noisy_matrix, sigma_noise = sigma_noise)
@@ -1153,7 +1217,8 @@ find_big_error_rep_app <- function(
     threshold_value = threshold_value,
     threshold_quantile_p = threshold_quantile_p,
     threshold_multiplier = threshold_multiplier,
-    residual_sd = residual_sd
+    residual_sd = residual_sd,
+    cssa_components = cssa_components
   )
 
   ht_result <- make_accumulator_generic(
@@ -1188,6 +1253,7 @@ find_big_error_rep_app <- function(
     dtheta = as.numeric(err["dtheta"]),
     dr_ratio = dr_ratio,
     dtheta_ratio = dtheta_ratio,
+    cssa_components = cssa_components,
     threshold_value = threshold_info$threshold_value,
     noisy_matrix = noisy_matrix,
     processed_matrix = threshold_info$processed,
@@ -1216,15 +1282,22 @@ find_big_error_cases <- function(
   max_cases,
   progress = NULL,
   n_workers = 1L,
-  max_row_k = 1L
+  max_row_k = 1L,
+  cssa_components = num_of_lines,
+  line_method = "bresenham"
 ) {
-  detectors <- available_detectors(num_of_lines = num_of_lines, max_row_k = max_row_k)
+  cssa_components <- max(1L, as.integer(cssa_components)[1L])
+  detectors <- available_detectors(
+    num_of_lines = num_of_lines,
+    max_row_k = max_row_k,
+    cssa_components = cssa_components
+  )
   if (!method_name %in% names(detectors)) {
     stop("Метод ", method_name, " недоступен.")
   }
 
   num_maxima <- max(as.integer(num_maxima), as.integer(num_of_lines), 1L)
-  base_matrix <- config_to_matrix(cfg)
+  base_matrix <- config_to_matrix(cfg, line_method = line_method)
   true_line <- config_true_params(cfg)
   ideal <- ideal_discretization_error(true_line, rho_step_ht, theta_step_ht)
   cases <- list()
@@ -1247,7 +1320,9 @@ find_big_error_cases <- function(
     threshold_multiplier = threshold_multiplier,
     factor_threshold = factor_threshold,
     ideal = ideal,
-    max_row_k = max_row_k
+    max_row_k = max_row_k,
+    cssa_components = cssa_components,
+    line_method = line_method
   )
 
   if (n_workers > 1L) {
@@ -1255,27 +1330,37 @@ find_big_error_cases <- function(
       progress(0.05, detail = sprintf("Параллельный поиск: %d воркеров", n_workers))
     }
     tasks <- Map(function(rep_i, seed) list(rep_i = rep_i, seed = seed), rep_ids, seeds)
-    cl <- make_app_cluster(n_workers)
-    on.exit(parallel::stopCluster(cl), add = TRUE)
-    found <- parallel::parLapplyLB(cl, tasks, function(task, args) {
-      do.call(
-        find_big_error_rep_app,
-        c(
-          list(rep_i = task$rep_i, seed = task$seed),
-          args
+    parallel_cases <- tryCatch({
+      cl <- make_app_cluster(n_workers)
+      on.exit(parallel::stopCluster(cl), add = TRUE)
+      found <- parallel::parLapplyLB(cl, tasks, function(task, args) {
+        do.call(
+          find_big_error_rep_app,
+          c(
+            list(rep_i = task$rep_i, seed = task$seed),
+            args
+          )
         )
-      )
-    }, worker_args)
-    cases <- found[!vapply(found, is.null, logical(1))]
-    if (length(cases) > 0L) {
-      case_reps <- vapply(cases, `[[`, integer(1), "rep")
-      cases <- cases[order(case_reps)]
-      cases <- cases[seq_len(min(length(cases), max_cases))]
+      }, worker_args)
+      found_cases <- found[!vapply(found, is.null, logical(1))]
+      if (length(found_cases) > 0L) {
+        case_reps <- vapply(found_cases, `[[`, integer(1), "rep")
+        found_cases <- found_cases[order(case_reps)]
+        found_cases <- found_cases[seq_len(min(length(found_cases), max_cases))]
+      }
+      found_cases
+    }, error = function(e) {
+      if (!is.null(progress)) {
+        progress(0.05, detail = paste("Parallel search failed; falling back to one worker:", conditionMessage(e)))
+      }
+      NULL
+    })
+    if (!is.null(parallel_cases)) {
+      if (!is.null(progress)) {
+        progress(1, detail = sprintf("Найдено случаев: %d", length(parallel_cases)))
+      }
+      return(list(ideal = ideal, cases = parallel_cases))
     }
-    if (!is.null(progress)) {
-      progress(1, detail = sprintf("Найдено случаев: %d", length(cases)))
-    }
-    return(list(ideal = ideal, cases = cases))
   }
 
   for (rep_i in seq_len(n_search)) {

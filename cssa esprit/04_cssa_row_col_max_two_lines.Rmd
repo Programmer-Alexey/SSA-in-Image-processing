@@ -1,4 +1,4 @@
-### Сравнение CSSA ROW.ROW, CSSA COL.ROW и MAX.ROW
+### Сравнение CSSA ROW.ROW, CSSA COL.ROW и MAX.ROW для двух прямых
 
 ```{r, include=FALSE}
 setup_candidates <- c(
@@ -465,8 +465,8 @@ make_parameter_methods <- function(use_esprit = FALSE,
 ```{r, fig.width=9, fig.height=4}
 set.seed(2026)
 
-demo_cssa_components <- 2L
-demo_max_row_k <- 1L
+demo_cssa_components <- 3L
+demo_max_row_k <- 2L
 demo_line_method <- "default"
 demo_methods <- make_parameter_methods(
   use_esprit = FALSE,
@@ -474,7 +474,11 @@ demo_methods <- make_parameter_methods(
   num_components = demo_cssa_components,
   max_row_k = demo_max_row_k
 )
-demo_lines <- data.frame(a = 2, b = 0, intensity = 0.8)
+demo_lines <- data.frame(
+  a = c(2, -1),
+  b = c(-1, 101),
+  intensity = c(0.8, 0.5)
+)
 demo_clean <- make_config_matrix(
   demo_lines,
   n_row = 100L,
@@ -518,29 +522,13 @@ plot.matrix(
 comparison_n_row <- 100L
 comparison_n_col <- 100L
 comparison_default_intensity <- 0.8
-comparison_line_method <- "bresenham"
-
+comparison_line_method <- "default"
 
 parameter_configs <- list(
-  diag_pos_full = data.frame(
-    a = 1,
-    b = 0,
-    intensity = comparison_default_intensity
-  ),
-  diag_neg_full = data.frame(
-    a = -1,
-    b = 101,
-    intensity = comparison_default_intensity
-  ),
-  steep_full = data.frame(
-    a = 2,
-    b = -1,
-    intensity = comparison_default_intensity
-  ),
-  steep_shifted = data.frame(
-    a = 2,
-    b = -40,
-    intensity = comparison_default_intensity
+  two_lines = data.frame(
+    a = c(2, -1),
+    b = c(-1, 101),
+    intensity = c(0.8, 0.5)
   )
 )
 
@@ -577,11 +565,12 @@ comparison_n_rep <- 5
 comparison_sigmas <- c(0.05, 0.2)
 comparison_threshold_multipliers <- c(1, 2)
 
-comparison_cssa_components <- 2
-comparison_max_row_k <- 1
+comparison_cssa_components <- 3
+comparison_max_row_k <- NA_integer_
+
 comparison_seed <- 2026L
-comparison_rho_step <- 1
-comparison_theta_step <- 0.01
+comparison_rho_step <- 0.2
+comparison_theta_step <- 0.002
 
 dt_table(line_configuration_table, caption = "Line configurations")
 ```

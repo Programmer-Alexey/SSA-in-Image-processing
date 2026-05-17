@@ -45,7 +45,14 @@ ui <- shiny::fluidPage(
           shiny::numericInput("exp_sigma", "Уровень шума", value = 0.2, min = 0, step = 0.01),
           shiny::numericInput("exp_n_row", "Число строк матрицы", value = 100, min = 10, step = 1),
           shiny::numericInput("exp_n_col", "Число столбцов матрицы", value = 100, min = 10, step = 1),
+          shiny::selectInput(
+            "exp_line_method",
+            "Line drawing",
+            choices = c("Bresenham" = "bresenham", "Default add.line" = "default"),
+            selected = "bresenham"
+          ),
           shiny::numericInput("exp_num_lines", "Количество прямых", value = 1, min = 1, step = 1),
+          shiny::numericInput("exp_cssa_components", "CSSA: components/rank", value = 1, min = 1, step = 1),
           shiny::checkboxInput("exp_cssa_esprit", "CSSA: ESPRIT + corrected frequency", value = FALSE),
           shiny::numericInput("exp_max_row_k", "MAX.row: points per row", value = 1, min = 1, step = 1),
           shiny::checkboxInput(
@@ -171,6 +178,12 @@ ui <- shiny::fluidPage(
           shiny::numericInput("find_n_row", "Число строк матрицы", value = 100, min = 10, step = 1),
           shiny::numericInput("find_n_col", "Число столбцов матрицы", value = 100, min = 10, step = 1),
           shiny::selectInput(
+            "find_line_method",
+            "Line drawing",
+            choices = c("Bresenham" = "bresenham", "Default add.line" = "default"),
+            selected = "bresenham"
+          ),
+          shiny::selectInput(
             "find_config_source",
             "Конфигурация",
             choices = c("Стандартная (1 прямая)" = "standard", "Пользовательская" = "custom"),
@@ -200,6 +213,7 @@ ui <- shiny::fluidPage(
             )
           ),
           shiny::selectInput("find_method", "Метод обработки", choices = method_choices),
+          shiny::numericInput("find_cssa_components", "CSSA: components/rank", value = 1, min = 1, step = 1),
           shiny::checkboxInput("find_cssa_esprit", "CSSA: ESPRIT + corrected frequency", value = FALSE),
           shiny::numericInput("find_max_row_k", "MAX.row: points per row", value = 1, min = 1, step = 1),
           shiny::selectInput(
@@ -318,7 +332,7 @@ server <- function(input, output, session) {
       text(0.5, 0.5, cfgs$message)
       return(invisible(NULL))
     }
-    draw_config_preview(cfgs)
+    draw_config_preview(cfgs, line_method = input$exp_line_method)
   })
 
   experiment_result <- shiny::eventReactive(input$run_experiment, {
@@ -348,7 +362,9 @@ server <- function(input, output, session) {
         threshold_multiplier = input$exp_threshold_multiplier,
         threshold_method_names = threshold_method_names,
         n_workers = input$exp_n_workers,
-        max_row_k = input$exp_max_row_k
+        max_row_k = input$exp_max_row_k,
+        cssa_components = input$exp_cssa_components,
+        line_method = input$exp_line_method
       )
       incProgress(0.9, detail = "Сводка")
       list(
@@ -443,7 +459,7 @@ server <- function(input, output, session) {
     method_map <- setNames(names(method_choices), unname(method_choices))
     method_name <- unname(method_map[input$find_method])
     method_name <- resolve_cssa_method_names(method_name, input$find_cssa_esprit)
-    num_lines <- if (input$find_config_source == "standard") 1L else as.integer(input$find_num_lines)
+    num_lines <- nrow(cfg$lines)
 
     shiny::withProgress(message = "Поиск больших ошибок", value = 0, {
       out <- find_big_error_cases(
@@ -463,7 +479,9 @@ server <- function(input, output, session) {
         factor_threshold = input$find_factor,
         max_cases = input$find_max_cases,
         n_workers = input$find_n_workers,
-        max_row_k = input$find_max_row_k
+        max_row_k = input$find_max_row_k,
+        cssa_components = input$find_cssa_components,
+        line_method = input$find_line_method
       )
       out
     })
@@ -494,6 +512,7 @@ server <- function(input, output, session) {
         dtheta = case$dtheta,
         dr_ratio = case$dr_ratio,
         dtheta_ratio = case$dtheta_ratio,
+        cssa_components = case$cssa_components,
         threshold_value = case$threshold_value
       )
     }))
