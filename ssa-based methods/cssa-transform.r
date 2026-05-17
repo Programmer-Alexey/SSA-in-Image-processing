@@ -17,7 +17,7 @@ add.line <- function(m, a = 1, b = 0, method = "bresenham", intensity = 1) {
     for (k in 1:N_t) {
       y <- a * k + b
       if (y >= 1 && y <= N_c) {
-        m[round(y), k] <- intensity
+        m[round(y), k] <- m[round(y), k] + intensity
       }
     }
     
@@ -37,7 +37,7 @@ add.line <- function(m, a = 1, b = 0, method = "bresenham", intensity = 1) {
     
     repeat {
       if (x0 >= 1 && x0 <= N_t && y0 >= 1 && y0 <= N_c) {
-        m[y0, x0] <- intensity
+        m[y0, x0] <- m[y0, x0] + intensity
       }
       if (x0 == x1 && y0 == y1) break
       e2 <- 2 * err
@@ -158,6 +158,9 @@ plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){
   rgb.palette <- colorRampPalette(c("white", "black"), space = "rgb")
 
   as_plot_matrix <- function(x) {
+    if (is.null(x)) {
+      stop("Cannot plot NULL matrix")
+    }
     x <- as.matrix(x)
     if (is.complex(x)) x <- Re(x)
     x
@@ -186,6 +189,13 @@ plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){
   # СЃРїРёСЃРѕРє РјР°С‚СЂРёС†
   plots <- list()
   for (i in seq_along(m)) {
+    if (is.null(m[[i]])) {
+      item_name <- names(m)[i]
+      if (is.null(item_name) || item_name == "") {
+        item_name <- paste0("#", i)
+      }
+      stop("Cannot plot NULL matrix in list item: ", item_name)
+    }
     mat <- t(as_plot_matrix(m[[i]]))
     if (from.0.to.1) {
       mat[mat < 0] <- 0

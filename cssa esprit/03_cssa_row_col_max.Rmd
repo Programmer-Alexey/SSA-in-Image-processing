@@ -460,6 +460,33 @@ make_parameter_methods <- function(use_esprit = FALSE,
     stringsAsFactors = FALSE
   )
 }
+
+plot_checked_matrices <- function(mats,
+                                  labels = names(mats),
+                                  nplots = length(mats),
+                                  from.0.to.1 = TRUE) {
+  if (!is.list(mats)) {
+    mats <- list(mats)
+  }
+
+  null_items <- vapply(mats, is.null, logical(1))
+  if (any(null_items)) {
+    bad_indices <- which(null_items)
+    bad_names <- names(mats)[bad_indices]
+    if (is.null(bad_names)) {
+      bad_names <- rep("", length(bad_indices))
+    }
+    bad_names[bad_names == ""] <- paste0("#", bad_indices[bad_names == ""])
+    stop("Cannot plot NULL matrices: ", paste(bad_names, collapse = ", "))
+  }
+
+  plot.matrix(
+    mats,
+    from.0.to.1 = from.0.to.1,
+    labels = labels,
+    nplots = nplots
+  )
+}
 ```
 
 ```{r, fig.width=9, fig.height=4}
@@ -500,15 +527,15 @@ demo_col_row <- cssa_method_binary(
 )
 demo_max_row <- row_max_binary(demo_noisy, k = demo_max_row_k)
 
-plot.matrix(
+plot_checked_matrices(
   list(
     "CSSA ROW.ROW" = demo_row_row$binary,
     "CSSA COL.ROW" = demo_col_row$binary,
     "MAX.ROW" = demo_max_row$binary
   ),
-  from.0.to.1 = TRUE,
   labels = c("CSSA ROW.ROW", "CSSA COL.ROW", "MAX.ROW"),
-  nplots = 3
+  nplots = 3,
+  from.0.to.1 = TRUE
 )
 ```
 

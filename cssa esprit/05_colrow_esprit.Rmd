@@ -1,0 +1,809 @@
+---
+title: "CSSA without threshold"
+output: html_document
+---
+
+```{r, include=FALSE}
+setup_candidates <- c(
+  "00_setup.Rmd",
+  file.path("cssa esprit", "00_setup.Rmd")
+)
+if (!exists("cssa_esprit_setup_loaded", inherits = FALSE)) {
+  setup_file <- setup_candidates[file.exists(setup_candidates)][1L]
+  if (is.na(setup_file)) {
+    stop("Cannot find 00_setup.Rmd")
+  }
+  setup_code <- tempfile(fileext = ".R")
+  knitr::purl(setup_file, output = setup_code, quiet = TRUE)
+  source(setup_code, local = knitr::knit_global())
+}
+```
+
+```{r, include=FALSE}
+n_row <- 100L
+n_col <- 100L
+line_method <- "default"
+cssa_ranks <- 1:3
+cssa_method <- "col.row"
+sigma_noise <- 0.05
+set.seed_value <- 2026L
+ht_n_rep <- 25L
+ht_rho_step <- 0.3
+ht_theta_step <- 0.03
+
+lines <- data.frame(
+  a = c(2, -1),
+  b = c(-1, 101),
+  intensity = c(0.4, 0.4)
+)
+```
+
+```{r, include=FALSE}
+normalize_config_lines <- function(lines) {
+  lines <- as.data.frame(lines)
+  if (!"intensity" %in% names(lines)) {
+    lines$intensity <- 1
+  }
+  lines <- lines[, c("a", "b", "intensity")]
+  lines$a <- as.numeric(lines$a)
+  lines$b <- as.numeric(lines$b)
+  lines$intensity <- as.numeric(lines$intensity)
+  lines
+}
+
+make_config_matrix <- function(lines,
+                               n_row = 100L,
+                               n_col = 100L,
+                               line_method = "default") {
+  lines <- normalize_config_lines(lines)
+  out <- matrix(0, nrow = n_row, ncol = n_col)
+
+  for (i in seq_len(nrow(lines))) {
+    out <- add.line(
+      out,
+      a = lines$a[i],
+      b = lines$b[i],
+      method = line_method,
+      intensity = lines$intensity[i]
+    )
+  }
+
+  out
+}
+
+cssa_reconstruct <- function(m, method, rank) {
+  cssa_denoise(
+    m,
+    num_of_lines = rank,
+    method = method,
+    clip = FALSE
+  )
+}
+
+esprit_project_cssa_corrected <- function(x,
+                                          L = (length(x) + 1L) %/% 2L,
+                                          num_components = 1L,
+                                          frequency_grid_multiplier = 1) {
+  x <- as.vector(x)
+  N <- length(x)
+  frequency_grid_multiplier <- as.numeric(frequency_grid_multiplier)[1L]
+  if (!is.finite(frequency_grid_multiplier) || frequency_grid_multiplier <= 0) {
+    frequency_grid_multiplier <- 1
+  }
+
+  tryCatch({
+    fit <- Rssa::ssa(x, L = L, kind = "cssa", svd.method = "svd")
+    esprit_res <- Rssa::parestimate(
+      fit,
+      groups = list(signal = seq_len(num_components)),
+      method = "esprit",
+      normalize.roots = FALSE
+    )
+
+    num_components <- min(
+      as.integer(num_components)[1L],
+      length(esprit_res$frequencies)
+    )
+    if (num_components < 1L) {
+      return(x)
+    }
+
+    grid_size <- frequency_grid_multiplier * N
+    omega <- round(esprit_res$frequencies[seq_len(num_components)] * grid_size) / grid_size
+    omega <- unique(omega)
+    mu <- exp(2 * pi * omega * 1i)
+    basis <- outer(0:(N - 1L), mu, function(i, z) z ^ i)
+    amplitudes <- as.vector(qr.solve(basis, x))
+
+    as.vector(basis %*% amplitudes)
+  }, error = function(e) {
+    x
+  })
+}
+
+cssa_esprit_reconstruct <- function(m,
+                                   method,
+                                   rank,
+                                   clip = FALSE,
+                                   frequency_grid_multiplier = 1) {
+  method <- match.arg(method, c("row.row", "col.row"))
+  m <- as.matrix(m)
+  z <- dft(m)
+
+  z_hat <- switch(
+    method,
+    "row.row" = {
+      L <- (ncol(z) + 1L) %/% 2L
+      t(vapply(seq_len(nrow(z)), function(i) {
+        as.complex(esprit_project_cssa_corrected(
+          z[i, ],
+          L = L,
+          num_components = rank,
+          frequency_grid_multiplier = frequency_grid_multiplier
+        ))
+      }, complex(ncol(z))))
+    },
+    "col.row" = {
+      L <- (nrow(z) + 1L) %/% 2L
+      vapply(seq_len(ncol(z)), function(j) {
+        as.complex(esprit_project_cssa_corrected(
+          z[, j],
+          L = L,
+          num_components = rank,
+          frequency_grid_multiplier = frequency_grid_multiplier
+        ))
+      }, complex(nrow(z)))
+    }
+  )
+
+  out <- Re(idft.row(z_hat))
+  if (clip) clip01(out) else out
+}
+
+matrix_error_row <- function(method, rank, estimate, truth) {
+  err <- estimate - truth
+  true_support <- truth != 0
+
+  data.frame(
+    method = method,
+    rank = rank,
+    mse = mean(as.numeric(err)^2),
+    max_abs_error = max(abs(err)),
+    max_abs_error_on_line = max(abs(err[true_support])),
+    max_abs_value_off_line = max(abs(estimate[!true_support])),
+    min_value_on_line = min(estimate[true_support]),
+    max_value_on_line = max(estimate[true_support]),
+    stringsAsFactors = FALSE
+  )
+}
+
+compact_error_table <- function(x) {
+  out <- x[, c("method", "rank", "mse", "max_abs_error")]
+  names(out) <- c("method", "rank", "mse", "max abs err")
+  out
+}
+
+run_cssa_grid <- function(input, truth, method, ranks) {
+  rows <- list()
+  estimates <- list()
+
+  for (rank in ranks) {
+    estimate <- cssa_reconstruct(input, method = method, rank = rank)
+    key <- paste(method, "rank", rank)
+    estimates[[key]] <- estimate
+    rows[[key]] <- matrix_error_row(
+      method = method,
+      rank = rank,
+      estimate = estimate,
+      truth = truth
+    )
+  }
+
+  list(
+    estimates = estimates,
+    errors = do.call(rbind, rows)
+  )
+}
+
+run_cssa_esprit_grid <- function(input,
+                                truth,
+                                method,
+                                ranks,
+                                frequency_grid_multiplier = 1,
+                                method_label = NULL) {
+  rows <- list()
+  estimates <- list()
+  if (is.null(method_label)) {
+    method_label <- paste(method, "esprit")
+  }
+
+  for (rank in ranks) {
+    estimate <- cssa_esprit_reconstruct(
+      input,
+      method = method,
+      rank = rank,
+      frequency_grid_multiplier = frequency_grid_multiplier
+    )
+    key <- paste(method, "rank", rank)
+    estimates[[key]] <- estimate
+    rows[[key]] <- matrix_error_row(
+      method = method_label,
+      rank = rank,
+      estimate = estimate,
+      truth = truth
+    )
+  }
+
+  list(
+    estimates = estimates,
+    errors = do.call(rbind, rows)
+  )
+}
+
+method_estimates <- function(estimates, method, ranks) {
+  keys <- paste(method, "rank", ranks)
+  missing_keys <- keys[!keys %in% names(estimates)]
+  if (length(missing_keys) > 0L) {
+    stop("Missing CSSA reconstructions: ", paste(missing_keys, collapse = ", "))
+  }
+  out <- estimates[keys]
+  names(out) <- paste(toupper(method), "rank", ranks)
+  out
+}
+
+method_abs_errors <- function(estimates, method, ranks, truth) {
+  out <- lapply(method_estimates(estimates, method, ranks), function(x) abs(x - truth))
+  names(out) <- paste(names(out), "abs error")
+  out
+}
+
+plot_matrix_list <- function(mats, labels, nplots) {
+  if (!is.list(mats)) {
+    mats <- list(mats)
+  }
+
+  null_items <- vapply(mats, is.null, logical(1))
+  if (any(null_items)) {
+    bad_indices <- which(null_items)
+    bad_names <- names(mats)[bad_indices]
+    if (is.null(bad_names)) {
+      bad_names <- rep("", length(bad_indices))
+    }
+    bad_names[bad_names == ""] <- paste0("#", bad_indices[bad_names == ""])
+    stop("Cannot plot NULL matrices: ", paste(bad_names, collapse = ", "))
+  }
+
+  plot.matrix(
+    mats,
+    from.0.to.1 = TRUE,
+    labels = labels,
+    nplots = nplots
+  )
+}
+
+cssa_col_singular_values <- function(m, L = (nrow(m) + 1L) %/% 2L) {
+  z <- dft(m)
+  lapply(seq_len(ncol(z)), function(j) {
+    Rssa::ssa(z[, j], L = L, kind = "cssa", svd.method = "svd")$sigma
+  })
+}
+
+cssa_col_ranks_after_dft <- function(m,
+                                     L = (nrow(m) + 1L) %/% 2L,
+                                     tol = 1e-8) {
+  z <- dft(m)
+  vapply(seq_len(ncol(z)), function(j) {
+    sigma <- Rssa::ssa(
+      z[, j],
+      L = L,
+      kind = "cssa",
+      svd.method = "svd"
+    )$sigma
+    if (length(sigma) == 0L || max(sigma) == 0) {
+      return(0L)
+    }
+    as.integer(sum(sigma > tol * max(sigma)))
+  }, integer(1))
+}
+
+plot_cssa_col_ranks_after_dft <- function(m,
+                                          L = (nrow(m) + 1L) %/% 2L,
+                                          tol = 1e-8) {
+  ranks <- cssa_col_ranks_after_dft(m, L = L, tol = tol)
+  plot(
+    seq_along(ranks),
+    ranks,
+    type = "h",
+    xlab = "DFT column",
+    ylab = "CSSA trajectory rank",
+    main = paste0("Ranks after DFT, L = ", L)
+  )
+  points(seq_along(ranks), ranks, pch = 16)
+  invisible(ranks)
+}
+
+threshold_1sigma <- function(denoised, noisy) {
+  denoised <- as.matrix(denoised)
+  threshold_value <- sd(as.numeric(noisy - denoised), na.rm = TRUE)
+  if (!is.finite(threshold_value)) {
+    threshold_value <- 0
+  }
+  list(
+    denoised = denoised,
+    binary = ifelse(denoised >= threshold_value, 1, 0),
+    threshold_value = threshold_value
+  )
+}
+
+config_true_lines <- function(lines) {
+  lines <- normalize_config_lines(lines)
+  out <- t(vapply(seq_len(nrow(lines)), function(i) {
+    convert_ab_to_rho_theta(lines$a[i], lines$b[i])
+  }, numeric(2)))
+  colnames(out) <- c("rho", "theta")
+  out
+}
+
+parameter_line_errors_by_line <- function(true_lines, pred_lines) {
+  true_lines <- as.matrix(true_lines)
+  pred_lines <- as.matrix(pred_lines)
+  n_lines <- nrow(true_lines)
+
+  pair_error <- function(true_line, pred_line) {
+    line_parameter_error(
+      c(rho = unname(true_line[1L]), theta = unname(true_line[2L])),
+      c(rho = unname(pred_line[1L]), theta = unname(pred_line[2L]))
+    )
+  }
+
+  if (n_lines == 1L) {
+    err <- pair_error(true_lines[1L, ], pred_lines[1L, ])
+    return(data.frame(
+      line_index = 1L,
+      rho_mse = unname(err["rho_mse"]),
+      theta_mse = unname(err["theta_mse"])
+    ))
+  }
+
+  all_permutations <- function(v) {
+    if (length(v) == 1L) {
+      return(matrix(v, nrow = 1L))
+    }
+    do.call(rbind, lapply(seq_along(v), function(i) {
+      cbind(v[i], all_permutations(v[-i]))
+    }))
+  }
+
+  perms <- all_permutations(seq_len(n_lines))
+  best_perm <- seq_len(n_lines)
+  best_total <- Inf
+
+  for (i in seq_len(nrow(perms))) {
+    cur <- t(vapply(seq_len(n_lines), function(j) {
+      pair_error(true_lines[j, ], pred_lines[perms[i, j], ])
+    }, numeric(2)))
+    cur_total <- sum(colMeans(cur))
+    if (cur_total < best_total) {
+      best_total <- cur_total
+      best_perm <- perms[i, ]
+    }
+  }
+
+  out <- do.call(rbind, lapply(seq_len(n_lines), function(i) {
+    err <- pair_error(true_lines[i, ], pred_lines[best_perm[i], ])
+    data.frame(
+      line_index = i,
+      rho_mse = unname(err["rho_mse"]),
+      theta_mse = unname(err["theta_mse"])
+    )
+  }))
+  rownames(out) <- NULL
+  out
+}
+
+ht_error_for_binary <- function(binary, true_lines) {
+  if (sum(binary > 0) == 0L) {
+    return(c(rho_mse = NA_real_, theta_mse = NA_real_))
+  }
+
+  ht <- make_accumulator(
+    binary,
+    detector = function(m) m,
+    rho_step = ht_rho_step,
+    theta_step = ht_theta_step
+  )
+  pred_lines <- find_k_max(
+    ht$accumulator,
+    nrow(true_lines),
+    ht$rho,
+    ht$theta,
+    suppress = nrow(true_lines) > 1L
+  )
+  err <- parameter_line_errors_by_line(true_lines, pred_lines)
+  c(
+    rho_mse = mean(err$rho_mse),
+    theta_mse = mean(err$theta_mse)
+  )
+}
+
+run_ht_threshold_comparison <- function(clean,
+                                        lines,
+                                        ranks,
+                                        n_rep = 25L,
+                                        sigma = 0.05,
+                                        method = "col.row") {
+  true_lines <- config_true_lines(lines)
+  rows <- list()
+
+  for (rep_i in seq_len(n_rep)) {
+    noisy_i <- add.noise(clean, sigma = sigma)
+
+    for (rank in ranks) {
+      cssa_processed <- threshold_1sigma(
+        cssa_reconstruct(noisy_i, method = method, rank = rank),
+        noisy_i
+      )
+      cssa_err <- ht_error_for_binary(cssa_processed$binary, true_lines)
+      rows[[length(rows) + 1L]] <- data.frame(
+        method = "CSSA",
+        rank = rank,
+        rep = rep_i,
+        rho_mse = cssa_err["rho_mse"],
+        theta_mse = cssa_err["theta_mse"]
+      )
+
+      esprit_processed <- threshold_1sigma(
+        cssa_esprit_reconstruct(
+          noisy_i,
+          method = method,
+          rank = rank,
+          clip = FALSE,
+          frequency_grid_multiplier = 2
+        ),
+        noisy_i
+      )
+      esprit_err <- ht_error_for_binary(esprit_processed$binary, true_lines)
+      rows[[length(rows) + 1L]] <- data.frame(
+        method = "CSSA ESPRIT 1/(2N)",
+        rank = rank,
+        rep = rep_i,
+        rho_mse = esprit_err["rho_mse"],
+        theta_mse = esprit_err["theta_mse"]
+      )
+    }
+  }
+
+  raw <- do.call(rbind, rows)
+  aggregate(
+    cbind(`mse dr` = rho_mse, `mse dt` = theta_mse) ~ method + rank,
+    data = raw,
+    FUN = function(x) mean(x, na.rm = TRUE)
+  )
+}
+
+```
+
+```{r, include=FALSE}
+set.seed(set.seed_value)
+
+clean <- make_config_matrix(
+  lines,
+  n_row = n_row,
+  n_col = n_col,
+  line_method = line_method
+)
+noisy <- add.noise(clean, sigma = sigma_noise)
+```
+
+# CSSA
+
+## Без Шума
+
+Вариант без шума и порогов
+
+```{r, fig.width=8, fig.height=4}
+plot_matrix_list(
+  list(clean = clean),
+  labels = "clean",
+  nplots = 1
+)
+```
+
+```{r}
+cssa_result <- run_cssa_grid(
+  input = clean,
+  truth = clean,
+  method = cssa_method,
+  ranks = cssa_ranks
+)
+
+dt_table(
+  compact_error_table(cssa_result$errors),
+  caption = "CSSA errors without noise"
+)
+```
+
+```{r, fig.width=12, fig.height=4}
+colrow_plots <- c(
+  list(clean = clean),
+  method_estimates(cssa_result$estimates, cssa_method, cssa_ranks)
+)
+
+plot_matrix_list(
+  colrow_plots,
+  labels = names(colrow_plots),
+  nplots = length(colrow_plots)
+)
+```
+
+```{r, fig.width=12, fig.height=4}
+colrow_error_plots <- method_abs_errors(
+  cssa_result$estimates,
+  cssa_method,
+  cssa_ranks,
+  clean
+)
+
+plot_matrix_list(
+  colrow_error_plots,
+  labels = names(colrow_error_plots),
+  nplots = length(colrow_error_plots)
+)
+```
+
+Посмотрим на сингулярные значения:
+
+```{r, fig.width=8, fig.height=4}
+sigma_list <- cssa_col_singular_values(clean)
+tail_energy <- vapply(sigma_list, function(x) {
+  keep <- seq_len(min(max(cssa_ranks), length(x)))
+  sum(x[-keep]^2)
+}, numeric(1))
+worst_col <- which.max(tail_energy)
+worst_sigma <- sigma_list[[worst_col]]
+
+plot(
+  seq_along(worst_sigma),
+  worst_sigma,
+  type = "h",
+  xlab = "CSSA component index",
+  ylab = "singular value",
+  main = paste("Worst DFT column:", worst_col)
+)
+```
+
+Для каждого столбца выведем ранг
+
+```{r, fig.width=8, fig.height=4}
+rank_by_dft_col <- plot_cssa_col_ranks_after_dft(clean)
+```
+
+## Вариант с шумом 0.05
+
+Добавим шум уровня `sigma = 0.05`. Все так же без порогов.
+
+```{r}
+cssa_noisy_result <- run_cssa_grid(
+  input = noisy,
+  truth = clean,
+  method = cssa_method,
+  ranks = cssa_ranks
+)
+
+dt_table(
+  compact_error_table(cssa_noisy_result$errors),
+  caption = "CSSA errors with sigma = 0.05"
+)
+```
+
+```{r, fig.width=12, fig.height=4}
+colrow_noisy_plots <- c(
+  list(clean = clean, noisy = noisy),
+  method_estimates(cssa_noisy_result$estimates, cssa_method, cssa_ranks)
+)
+
+plot_matrix_list(
+  colrow_noisy_plots,
+  labels = names(colrow_noisy_plots),
+  nplots = length(colrow_noisy_plots)
+)
+```
+
+```{r, fig.width=12, fig.height=4}
+colrow_noisy_error_plots <- method_abs_errors(
+  cssa_noisy_result$estimates,
+  cssa_method,
+  cssa_ranks,
+  clean
+)
+
+plot_matrix_list(
+  colrow_noisy_error_plots,
+  labels = names(colrow_noisy_error_plots),
+  nplots = length(colrow_noisy_error_plots)
+)
+```
+
+# CSSA ESPRIT
+
+На всякий случай выведу сам код с ESPRIT
+
+```{r, eval=FALSE}
+esprit_project_cssa_corrected <- function(x,
+                                          L = (length(x) + 1L) %/% 2L,
+                                          num_components = 1L,
+                                          frequency_grid_multiplier = 1) {
+  x <- as.vector(x)
+  N <- length(x)
+  fit <- Rssa::ssa(x, L = L, kind = "cssa", svd.method = "svd")
+  esprit_res <- Rssa::parestimate(
+    fit,
+    groups = list(signal = seq_len(num_components)),
+    method = "esprit",
+    normalize.roots = FALSE
+  )
+
+  grid_size <- frequency_grid_multiplier * N
+  omega <- round(esprit_res$frequencies[seq_len(num_components)] * grid_size) / grid_size
+  omega <- unique(omega)
+  mu <- exp(2 * pi * omega * 1i)
+  basis <- outer(0:(N - 1L), mu, function(i, z) z ^ i)
+  amplitudes <- as.vector(qr.solve(basis, x))
+
+  as.vector(basis %*% amplitudes)
+}
+```
+
+## Без шума и с сеткой шага 1/N
+
+Это вариант с сеткой, которую я использовал в 4-м файле, которая оказалась не очень корректной:
+
+```{r}
+cssa_esprit_result <- run_cssa_esprit_grid(
+  input = clean,
+  truth = clean,
+  method = cssa_method,
+  ranks = cssa_ranks
+)
+
+dt_table(
+  compact_error_table(cssa_esprit_result$errors),
+  caption = "CSSA ESPRIT errors without noise, grid 1/N"
+)
+```
+
+```{r, fig.width=12, fig.height=4}
+esprit_colrow_plots <- c(
+  list(clean = clean),
+  method_estimates(cssa_esprit_result$estimates, cssa_method, cssa_ranks)
+)
+names(esprit_colrow_plots)[-1L] <- paste("ESPRIT 1/N", names(esprit_colrow_plots)[-1L])
+
+plot_matrix_list(
+  esprit_colrow_plots,
+  labels = names(esprit_colrow_plots),
+  nplots = length(esprit_colrow_plots)
+)
+```
+
+```{r, fig.width=12, fig.height=4}
+esprit_colrow_error_plots <- method_abs_errors(
+  cssa_esprit_result$estimates,
+  cssa_method,
+  cssa_ranks,
+  clean
+)
+names(esprit_colrow_error_plots) <- paste("ESPRIT 1/N", names(esprit_colrow_error_plots))
+
+plot_matrix_list(
+  esprit_colrow_error_plots,
+  labels = names(esprit_colrow_error_plots),
+  nplots = length(esprit_colrow_error_plots)
+)
+```
+
+Получились такие ранги:
+
+```{r, fig.width=8, fig.height=4}
+esprit_diagnostic_rank <- max(cssa_ranks)
+esprit_diagnostic_key <- paste(cssa_method, "rank", esprit_diagnostic_rank)
+esprit_diagnostic_matrix <- cssa_esprit_result$estimates[[esprit_diagnostic_key]]
+esprit_rank_by_dft_col <- plot_cssa_col_ranks_after_dft(esprit_diagnostic_matrix)
+```
+
+## Шаг 1/(2N)
+
+Теперь шаг $1/2N$
+
+```{r}
+cssa_esprit_half_grid_result <- run_cssa_esprit_grid(
+  input = clean,
+  truth = clean,
+  method = cssa_method,
+  ranks = cssa_ranks,
+  frequency_grid_multiplier = 2,
+  method_label = paste(cssa_method, "esprit 1/(2N)")
+)
+
+dt_table(
+  compact_error_table(cssa_esprit_half_grid_result$errors),
+  caption = "CSSA ESPRIT errors without noise, grid 1/(2N)"
+)
+```
+
+## Аналогично с шумом
+
+Здесь мы просто добавим шум и проведем исследования чтобы понять что все работает
+
+```{r}
+cssa_esprit_noisy_half_grid_result <- run_cssa_esprit_grid(
+  input = noisy,
+  truth = clean,
+  method = cssa_method,
+  ranks = cssa_ranks,
+  frequency_grid_multiplier = 2,
+  method_label = paste(cssa_method, "esprit 1/(2N)")
+)
+
+dt_table(
+  compact_error_table(cssa_esprit_noisy_half_grid_result$errors),
+  caption = "CSSA ESPRIT errors with sigma = 0.05, grid 1/(2N)"
+)
+```
+
+```{r, fig.width=12, fig.height=4}
+esprit_noisy_half_grid_plots <- c(
+  list(clean = clean, noisy = noisy),
+  method_estimates(cssa_esprit_noisy_half_grid_result$estimates, cssa_method, cssa_ranks)
+)
+names(esprit_noisy_half_grid_plots)[-(1:2)] <- paste(
+  "ESPRIT 1/(2N)",
+  names(esprit_noisy_half_grid_plots)[-(1:2)]
+)
+
+plot_matrix_list(
+  esprit_noisy_half_grid_plots,
+  labels = names(esprit_noisy_half_grid_plots),
+  nplots = length(esprit_noisy_half_grid_plots)
+)
+```
+
+```{r, fig.width=12, fig.height=4}
+esprit_noisy_half_grid_error_plots <- method_abs_errors(
+  cssa_esprit_noisy_half_grid_result$estimates,
+  cssa_method,
+  cssa_ranks,
+  clean
+)
+names(esprit_noisy_half_grid_error_plots) <- paste(
+  "ESPRIT 1/(2N)",
+  names(esprit_noisy_half_grid_error_plots)
+)
+
+plot_matrix_list(
+  esprit_noisy_half_grid_error_plots,
+  labels = names(esprit_noisy_half_grid_error_plots),
+  nplots = length(esprit_noisy_half_grid_error_plots)
+)
+```
+
+# Сравнение через HT
+Порог `1 sigma`. Размер выборки `n_rep = 25`.
+
+```{r}
+set.seed(set.seed_value + 1L)
+
+ht_summary <- run_ht_threshold_comparison(
+  clean = clean,
+  lines = lines,
+  ranks = cssa_ranks,
+  n_rep = ht_n_rep,
+  sigma = sigma_noise,
+  method = cssa_method
+)
+
+dt_table(
+  ht_summary,
+  caption = "HT comparison with threshold 1 sigma"
+)
+```
