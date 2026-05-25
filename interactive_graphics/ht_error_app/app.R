@@ -27,6 +27,27 @@ resolve_cssa_method_names <- function(method_names, use_esprit = FALSE) {
   method_names
 }
 
+rank_input_value <- function(x) {
+  pair <- parse_cssa_rank_pair(x)
+  if (all(is.na(pair))) {
+    return(NA_character_)
+  }
+  paste(pair[["row_row"]], pair[["col_row"]], sep = ", ")
+}
+
+auto_rank_for_config_methods <- function(config_list, method_names = character(0), line_method = "bresenham") {
+  if (length(config_list) == 0L) {
+    return("1, 1")
+  }
+
+  ranks <- do.call(rbind, lapply(config_list, function(cfg) {
+    cssa_auto_rank_pair(cfg, line_method = line_method)
+  }))
+  row_rank <- max(1L, as.integer(max(ranks[, "row_row"], na.rm = TRUE)))
+  col_rank <- max(1L, as.integer(max(ranks[, "col_row"], na.rm = TRUE)))
+  paste(row_rank, col_rank, sep = ", ")
+}
+
 ui <- shiny::fluidPage(
   shiny::titlePanel("HT: сравнение методов и поиск больших ошибок"),
   shiny::tabsetPanel(
@@ -38,7 +59,7 @@ ui <- shiny::fluidPage(
           shiny::numericInput(
             "exp_n_workers",
             "Число потоков",
-            value = available_worker_count(),
+            value = 1,
             min = 1,
             step = 1
           ),
@@ -52,7 +73,7 @@ ui <- shiny::fluidPage(
             selected = "bresenham"
           ),
           shiny::numericInput("exp_num_lines", "Количество прямых", value = 1, min = 1, step = 1),
-          shiny::numericInput("exp_cssa_components", "CSSA: components/rank", value = 1, min = 1, step = 1),
+          shiny::textInput("exp_cssa_components", "CSSA ranks: row.row, col.row", value = ""),
           shiny::checkboxInput("exp_cssa_esprit", "CSSA: ESPRIT + corrected frequency", value = FALSE),
           shiny::numericInput("exp_max_row_k", "MAX.row: points per row", value = 1, min = 1, step = 1),
           shiny::checkboxInput(
@@ -213,7 +234,7 @@ ui <- shiny::fluidPage(
             )
           ),
           shiny::selectInput("find_method", "Метод обработки", choices = method_choices),
-          shiny::numericInput("find_cssa_components", "CSSA: components/rank", value = 1, min = 1, step = 1),
+          shiny::textInput("find_cssa_components", "CSSA ranks: row.row, col.row", value = ""),
           shiny::checkboxInput("find_cssa_esprit", "CSSA: ESPRIT + corrected frequency", value = FALSE),
           shiny::numericInput("find_max_row_k", "MAX.row: points per row", value = 1, min = 1, step = 1),
           shiny::selectInput(
@@ -258,7 +279,7 @@ ui <- shiny::fluidPage(
           shiny::numericInput(
             "find_n_workers",
             "Число потоков",
-            value = available_worker_count(),
+            value = 1,
             min = 1,
             step = 1
           ),
@@ -283,6 +304,11 @@ ui <- shiny::fluidPage(
 )
 
 server <- function(input, output, session) {
+  exp_rank_mode <- shiny::reactiveVal("auto")
+  find_rank_mode <- shiny::reactiveVal("auto")
+  exp_rank_updating <- shiny::reactiveVal(FALSE)
+  find_rank_updating <- shiny::reactiveVal(FALSE)
+
   shiny::observeEvent(input$exp_methods, {
     selected_methods <- input$exp_methods %||% character(0)
     cur_threshold_methods <- input$exp_threshold_methods %||% character(0)
@@ -317,6 +343,72 @@ server <- function(input, output, session) {
     )
   })
 
+  experiment_method_names <- shiny::reactive({
+    chosen_labels <- input$exp_methods %||% character(0)
+    method_map <- setNames(names(method_choices), unname(method_choices))
+    method_names <- unname(method_map[chosen_labels])
+    method_names <- method_names[!is.na(method_names)]
+    resolve_cssa_method_names(method_names, input$exp_cssa_esprit)
+  })
+
+  observe_exp_auto_rank <- function() {
+    cfgs <- tryCatch(experiment_config_list(), error = function(e) NULL)
+    if (is.null(cfgs)) {
+      return(invisible(NULL))
+    }
+    rank <- auto_rank_for_config_methods(
+      cfgs,
+      experiment_method_names(),
+      line_method = input$exp_line_method
+    )
+    exp_rank_updating(TRUE)
+    shiny::updateTextInput(session, "exp_cssa_components", value = rank)
+    invisible(NULL)
+  }
+
+  update_exp_rank_from_config <- function() {
+    exp_rank_mode("auto")
+    observe_exp_auto_rank()
+  }
+
+  shiny::observeEvent(
+    list(
+      input$exp_num_lines,
+      input$exp_n_row,
+      input$exp_n_col,
+      input$exp_line_method,
+      input$exp_use_standard_single,
+      input$exp_line_text
+    ),
+    update_exp_rank_from_config(),
+    ignoreNULL = FALSE
+  )
+
+  shiny::observeEvent(
+    list(
+      input$exp_methods,
+      input$exp_cssa_esprit
+    ),
+    if (identical(exp_rank_mode(), "auto")) {
+      observe_exp_auto_rank()
+    },
+    ignoreNULL = FALSE
+  )
+
+  shiny::observeEvent(input$exp_cssa_components, {
+    if (isTRUE(exp_rank_updating())) {
+      exp_rank_updating(FALSE)
+      return(invisible(NULL))
+    }
+    if (is.na(rank_input_value(input$exp_cssa_components))) {
+      exp_rank_mode("auto")
+      observe_exp_auto_rank()
+    } else {
+      exp_rank_mode("manual")
+    }
+    invisible(NULL)
+  }, ignoreInit = TRUE)
+
   output$exp_config_message <- shiny::renderText({
     cfgs <- tryCatch(experiment_config_list(), error = function(e) e)
     if (inherits(cfgs, "error")) {
@@ -337,13 +429,16 @@ server <- function(input, output, session) {
 
   experiment_result <- shiny::eventReactive(input$run_experiment, {
     cfgs <- experiment_config_list()
-    chosen_labels <- input$exp_methods
     method_map <- setNames(names(method_choices), unname(method_choices))
-    method_names <- unname(method_map[chosen_labels])
+    method_names <- experiment_method_names()
     threshold_method_names <- unname(method_map[input$exp_threshold_methods %||% character(0)])
     threshold_method_names <- threshold_method_names[!is.na(threshold_method_names)]
-    method_names <- resolve_cssa_method_names(method_names, input$exp_cssa_esprit)
     threshold_method_names <- resolve_cssa_method_names(threshold_method_names, input$exp_cssa_esprit)
+    cssa_components <- if (identical(exp_rank_mode(), "auto")) {
+      NA_character_
+    } else {
+      rank_input_value(input$exp_cssa_components)
+    }
 
     shiny::withProgress(message = "Запуск эксперимента", value = 0, {
       incProgress(0.1, detail = "Подготовка")
@@ -363,7 +458,7 @@ server <- function(input, output, session) {
         threshold_method_names = threshold_method_names,
         n_workers = input$exp_n_workers,
         max_row_k = input$exp_max_row_k,
-        cssa_components = input$exp_cssa_components,
+        cssa_components = cssa_components,
         line_method = input$exp_line_method
       )
       incProgress(0.9, detail = "Сводка")
@@ -454,12 +549,80 @@ server <- function(input, output, session) {
     cfgs[[1]]
   })
 
-  find_result <- shiny::eventReactive(input$run_find, {
-    cfg <- find_config()
+  find_method_name <- shiny::reactive({
     method_map <- setNames(names(method_choices), unname(method_choices))
     method_name <- unname(method_map[input$find_method])
-    method_name <- resolve_cssa_method_names(method_name, input$find_cssa_esprit)
+    resolve_cssa_method_names(method_name, input$find_cssa_esprit)
+  })
+
+  observe_find_auto_rank <- function() {
+    cfg <- tryCatch(find_config(), error = function(e) NULL)
+    if (is.null(cfg)) {
+      return(invisible(NULL))
+    }
+    rank <- auto_rank_for_config_methods(
+      list(cfg),
+      find_method_name(),
+      line_method = input$find_line_method
+    )
+    find_rank_updating(TRUE)
+    shiny::updateTextInput(session, "find_cssa_components", value = rank)
+    invisible(NULL)
+  }
+
+  update_find_rank_from_config <- function() {
+    find_rank_mode("auto")
+    observe_find_auto_rank()
+  }
+
+  shiny::observeEvent(
+    list(
+      input$find_config_source,
+      input$find_standard_config,
+      input$find_num_lines,
+      input$find_n_row,
+      input$find_n_col,
+      input$find_line_method,
+      input$find_line_text
+    ),
+    update_find_rank_from_config(),
+    ignoreNULL = FALSE
+  )
+
+  shiny::observeEvent(
+    list(
+      input$find_method,
+      input$find_cssa_esprit
+    ),
+    if (identical(find_rank_mode(), "auto")) {
+      observe_find_auto_rank()
+    },
+    ignoreNULL = FALSE
+  )
+
+  shiny::observeEvent(input$find_cssa_components, {
+    if (isTRUE(find_rank_updating())) {
+      find_rank_updating(FALSE)
+      return(invisible(NULL))
+    }
+    if (is.na(rank_input_value(input$find_cssa_components))) {
+      find_rank_mode("auto")
+      observe_find_auto_rank()
+    } else {
+      find_rank_mode("manual")
+    }
+    invisible(NULL)
+  }, ignoreInit = TRUE)
+
+  find_result <- shiny::eventReactive(input$run_find, {
+    cfg <- find_config()
+    method_name <- find_method_name()
     num_lines <- nrow(cfg$lines)
+    cssa_components <- if (identical(find_rank_mode(), "auto")) {
+      NA_character_
+    } else {
+      rank_input_value(input$find_cssa_components)
+    }
 
     shiny::withProgress(message = "Поиск больших ошибок", value = 0, {
       out <- find_big_error_cases(
@@ -480,7 +643,7 @@ server <- function(input, output, session) {
         max_cases = input$find_max_cases,
         n_workers = input$find_n_workers,
         max_row_k = input$find_max_row_k,
-        cssa_components = input$find_cssa_components,
+        cssa_components = cssa_components,
         line_method = input$find_line_method
       )
       out
@@ -512,7 +675,12 @@ server <- function(input, output, session) {
         dtheta = case$dtheta,
         dr_ratio = case$dr_ratio,
         dtheta_ratio = case$dtheta_ratio,
+        num_maxima = case$num_maxima,
+        detected_lines = case$detected_lines,
         cssa_components = case$cssa_components,
+        cssa_rank_source = case$cssa_rank_source,
+        cssa_auto_rank = case$cssa_auto_rank,
+        frequency_grid_multiplier = case$frequency_grid_multiplier,
         threshold_value = case$threshold_value
       )
     }))
@@ -551,6 +719,12 @@ server <- function(input, output, session) {
       dtheta = case$dtheta,
       dr_ratio = case$dr_ratio,
       dtheta_ratio = case$dtheta_ratio,
+      num_maxima = case$num_maxima,
+      detected_lines = case$detected_lines,
+      cssa_components = case$cssa_components,
+      cssa_rank_source = case$cssa_rank_source,
+      cssa_auto_rank = case$cssa_auto_rank,
+      frequency_grid_multiplier = case$frequency_grid_multiplier,
       threshold_value = case$threshold_value
     )
   }, digits = 6)

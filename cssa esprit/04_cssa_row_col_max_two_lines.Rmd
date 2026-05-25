@@ -5,15 +5,13 @@ setup_candidates <- c(
   "00_setup.Rmd",
   file.path("cssa esprit", "00_setup.Rmd")
 )
-if (!exists("cssa_esprit_setup_loaded", inherits = FALSE)) {
-  setup_file <- setup_candidates[file.exists(setup_candidates)][1L]
-  if (is.na(setup_file)) {
-    stop("Cannot find 00_setup.Rmd")
-  }
-  setup_code <- tempfile(fileext = ".R")
-  knitr::purl(setup_file, output = setup_code, quiet = TRUE)
-  source(setup_code, local = knitr::knit_global())
+setup_file <- setup_candidates[file.exists(setup_candidates)][1L]
+if (is.na(setup_file)) {
+  stop("Cannot find 00_setup.Rmd")
 }
+setup_code <- tempfile(fileext = ".R")
+knitr::purl(setup_file, output = setup_code, quiet = TRUE)
+source(setup_code, local = knitr::knit_global())
 ```
 
 ```{r, include=FALSE}
@@ -38,9 +36,15 @@ threshold_binary <- function(denoised,
     cur_threshold
   }
 
+  active <- if (threshold_value <= 0) {
+    denoised > 0
+  } else {
+    denoised >= threshold_value
+  }
+
   list(
     denoised = denoised,
-    binary = ifelse(denoised >= threshold_value, 1, 0),
+    binary = ifelse(active, 1, 0),
     threshold_value = threshold_value,
     noise_sd = noise_sd
   )
@@ -76,7 +80,7 @@ row_max_binary <- function(m, k = 1L) {
 
   for (i in seq_len(nrow(m))) {
     ind <- order(m[i, ], decreasing = TRUE)[seq_len(k)]
-    binary[i, ind] <- 1
+    binary[i, ind] <- m[i, ind]
   }
 
   list(
@@ -85,6 +89,73 @@ row_max_binary <- function(m, k = 1L) {
     threshold_value = NA_real_,
     noise_sd = NA_real_
   )
+}
+
+pad_replicate <- function(x, pad) {
+  nr <- nrow(x)
+  nc <- ncol(x)
+  row_idx <- pmin(pmax(seq_len(nr + 2L * pad) - pad, 1L), nr)
+  col_idx <- pmin(pmax(seq_len(nc + 2L * pad) - pad, 1L), nc)
+  x[row_idx, col_idx]
+}
+
+median_denoise <- function(m, n = 3L) {
+  x <- clip01(m)
+  n <- max(1L, as.integer(n)[1L])
+  if (n %% 2L == 0L) {
+    n <- n + 1L
+  }
+  pad <- (n - 1L) %/% 2L
+  padded <- pad_replicate(x, pad)
+  out <- matrix(0, nrow = nrow(x), ncol = ncol(x))
+
+  for (i in seq_len(nrow(x))) {
+    for (j in seq_len(ncol(x))) {
+      block <- padded[i:(i + 2L * pad), j:(j + 2L * pad)]
+      out[i, j] <- stats::median(block)
+    }
+  }
+
+  clip01(out)
+}
+
+wiener_denoise <- function(m, ksize = 5L) {
+  x <- clip01(m)
+  ksize <- max(1L, as.integer(ksize)[1L])
+  if (ksize %% 2L == 0L) {
+    ksize <- ksize + 1L
+  }
+  pad <- (ksize - 1L) %/% 2L
+  padded <- pad_replicate(x, pad)
+  local_mean <- matrix(0, nrow = nrow(x), ncol = ncol(x))
+  local_var <- matrix(0, nrow = nrow(x), ncol = ncol(x))
+
+  for (i in seq_len(nrow(x))) {
+    for (j in seq_len(ncol(x))) {
+      block <- padded[i:(i + 2L * pad), j:(j + 2L * pad)]
+      local_mean[i, j] <- mean(block)
+      local_var[i, j] <- stats::var(as.vector(block))
+    }
+  }
+
+  local_var[!is.finite(local_var)] <- 0
+  local_var[local_var < 0] <- 0
+  noise_var <- mean(local_var, na.rm = TRUE)
+  gain <- pmax(local_var - noise_var, 0) / pmax(local_var, 1e-8)
+  clip01(local_mean + gain * (x - local_mean))
+}
+
+bm3d_available <- requireNamespace("reticulate", quietly = TRUE) &&
+  reticulate::py_module_available("bm3d")
+bm3d_lib <- if (bm3d_available) reticulate::import("bm3d") else NULL
+
+bm3d_denoise <- function(m, sigma_noise) {
+  if (!bm3d_available) {
+    stop("Python module 'bm3d' is not available")
+  }
+  x <- as.matrix(m)
+  x[!is.finite(x)] <- 0
+  clip01(bm3d_lib$bm3d(x, sigma_psd = as.numeric(sigma_noise)))
 }
 
 normalize_config_lines <- function(lines) {
@@ -97,6 +168,133 @@ normalize_config_lines <- function(lines) {
   lines$b <- as.numeric(lines$b)
   lines$intensity <- as.numeric(lines$intensity)
   lines
+}
+
+cssa_component_limit <- function(n, L = (n + 1L) %/% 2L) {
+  n <- as.integer(n)[1L]
+  L <- as.integer(L)[1L]
+  if (!is.finite(n) || is.na(n) || n < 1L) {
+    return(1L)
+  }
+  if (!is.finite(L) || is.na(L) || L < 1L) {
+    L <- (n + 1L) %/% 2L
+  }
+  K <- n - L + 1L
+  max(1L, min(L, K))
+}
+
+gcd_int <- function(a, b) {
+  a <- abs(as.integer(a))
+  b <- abs(as.integer(b))
+  while (b != 0L) {
+    tmp <- b
+    b <- a %% b
+    a <- tmp
+  }
+  a
+}
+
+integer_lcm <- function(x) {
+  x <- abs(as.integer(x))
+  x <- x[is.finite(x) & !is.na(x) & x > 0L]
+  if (length(x) == 0L) {
+    return(1L)
+  }
+  as.integer(Reduce(function(a, b) abs(a * b) / gcd_int(a, b), x))
+}
+
+esprit_grid_multiplier_from_lines <- function(lines) {
+  lines <- normalize_config_lines(lines)
+  a <- round(abs(lines$a))
+  a[a < 1L] <- 1L
+  integer_lcm(a)
+}
+
+cssa_rowrow_auto_rank_from_lines <- function(lines) {
+  max(1L, nrow(normalize_config_lines(lines)))
+}
+
+cssa_colrow_safe_rank_from_lines <- function(lines, n_row, n_col) {
+  lines <- normalize_config_lines(lines)
+  n_row <- max(1L, as.integer(n_row)[1L])
+  n_col <- max(1L, as.integer(n_col)[1L])
+  L <- (n_row + 1L) %/% 2L
+  K <- n_row - L + 1L
+
+  ranks <- vapply(seq_len(nrow(lines)), function(i) {
+    cur_a <- lines$a[i]
+    cur_b <- lines$b[i]
+    alpha <- max(1, abs(cur_a))
+
+    if (cur_a > 0) {
+      y1 <- cur_a + cur_b
+      yN <- cur_a * n_col + cur_b
+    } else {
+      y1 <- n_row + 1 - (cur_a + cur_b)
+      yN <- n_row + 1 - (cur_a * n_col + cur_b)
+    }
+
+    max(1L, as.integer(floor(min(
+      L,
+      K,
+      max(yN, 0),
+      max(n_row + 1 - y1, 0),
+      max(alpha, y1) + max(n_row + 1 - yN - alpha, 0)
+    ))))
+  }, integer(1))
+
+  max(1L, as.integer(sum(ranks)))
+}
+
+parse_component_pair <- function(x) {
+  if (length(x) == 0L || all(is.na(x))) {
+    return(c(row.row = NA_integer_, col.row = NA_integer_))
+  }
+  parts <- unlist(strsplit(paste(as.character(x), collapse = ","), "[,;[:space:]]+"))
+  parts <- parts[nzchar(parts)]
+  values <- suppressWarnings(as.integer(parts))
+  values <- values[is.finite(values) & !is.na(values) & values >= 1L]
+  if (length(values) == 0L) {
+    return(c(row.row = NA_integer_, col.row = NA_integer_))
+  }
+  if (length(values) == 1L) {
+    values <- rep(values, 2L)
+  }
+  c(row.row = values[1L], col.row = values[2L])
+}
+
+auto_rank_pair <- function(lines, n_row, n_col) {
+  c(
+    row.row = min(
+      cssa_rowrow_auto_rank_from_lines(lines),
+      cssa_component_limit(n_col)
+    ),
+    col.row = min(
+      cssa_colrow_safe_rank_from_lines(lines, n_row, n_col),
+      cssa_component_limit(n_row)
+    )
+  )
+}
+
+resolve_method_rank <- function(method, lines, n_row, n_col, cssa_components = NA) {
+  auto <- auto_rank_pair(lines, n_row, n_col)
+  manual <- parse_component_pair(cssa_components)
+  key <- if (grepl("col\\.row", method)) "col.row" else "row.row"
+  limit <- if (identical(key, "col.row")) {
+    cssa_component_limit(n_row)
+  } else {
+    cssa_component_limit(n_col)
+  }
+
+  if (!is.finite(manual[[key]]) || is.na(manual[[key]])) {
+    value <- auto[[key]]
+    source <- "auto"
+  } else {
+    value <- min(max(1L, manual[[key]]), limit)
+    source <- if (value < manual[[key]]) "manual_clamped" else "manual"
+  }
+
+  list(value = value, source = source, auto = auto[[key]])
 }
 
 make_config_matrix <- function(lines,
@@ -221,9 +419,16 @@ parameter_line_error <- function(true_lines, pred_lines) {
 
 esprit_project_cssa_corrected <- function(x,
                                           L = (length(x) + 1L) %/% 2L,
-                                          num_components = 1L) {
+                                          num_components = 1L,
+                                          frequency_grid_multiplier = 1) {
   x <- as.vector(x)
   N <- length(x)
+  num_components <- max(1L, as.integer(num_components)[1L])
+  num_components <- min(num_components, cssa_component_limit(N, L = L))
+  frequency_grid_multiplier <- as.numeric(frequency_grid_multiplier)[1L]
+  if (!is.finite(frequency_grid_multiplier) || frequency_grid_multiplier <= 0) {
+    frequency_grid_multiplier <- 1
+  }
 
   tryCatch({
     fit <- Rssa::ssa(x, L = L, kind = "cssa", svd.method = "svd")
@@ -242,11 +447,21 @@ esprit_project_cssa_corrected <- function(x,
       return(x)
     }
 
-    omega <- round(esprit_res$frequencies[seq_len(num_components)] * N) / N
+    signal_rec <- Rssa::reconstruct(
+      fit,
+      groups = list(signal = seq_len(num_components))
+    )
+    x_signal <- as.vector(signal_rec$signal)
+    if (length(x_signal) != N) {
+      x_signal <- x
+    }
+
+    grid_size <- frequency_grid_multiplier * N
+    omega <- round(esprit_res$frequencies[seq_len(num_components)] * grid_size) / grid_size
     omega <- unique(omega)
     mu <- exp(2 * pi * omega * 1i)
     basis <- outer(0:(N - 1L), mu, function(i, z) z ^ i)
-    amplitudes <- as.vector(qr.solve(basis, x))
+    amplitudes <- as.vector(qr.solve(basis, x_signal))
 
     as.vector(basis %*% amplitudes)
   }, error = function(e) {
@@ -257,6 +472,7 @@ esprit_project_cssa_corrected <- function(x,
 new_cssa_denoise_by_method <- function(m,
                                        method = c("row.row", "col.row"),
                                        num_components = 1L,
+                                       frequency_grid_multiplier = 1,
                                        clip = TRUE) {
   method <- match.arg(method)
   m <- as.matrix(m)
@@ -270,7 +486,8 @@ new_cssa_denoise_by_method <- function(m,
         as.complex(esprit_project_cssa_corrected(
           z[i, ],
           L = L,
-          num_components = num_components
+          num_components = num_components,
+          frequency_grid_multiplier = frequency_grid_multiplier
         ))
       }, complex(ncol(z))))
     },
@@ -280,7 +497,8 @@ new_cssa_denoise_by_method <- function(m,
         as.complex(esprit_project_cssa_corrected(
           z[, j],
           L = L,
-          num_components = num_components
+          num_components = num_components,
+          frequency_grid_multiplier = frequency_grid_multiplier
         ))
       }, complex(nrow(z)))
     }
@@ -296,6 +514,8 @@ parameter_preprocess_binary <- function(m,
                                         use_noise_cut = TRUE,
                                         m_coef = 1,
                                         num_components = 1L,
+                                        frequency_grid_multiplier = 1,
+                                        sigma_noise = 0.2,
                                         k = 1L) {
   switch(
     method,
@@ -322,18 +542,7 @@ parameter_preprocess_binary <- function(m,
         m,
         method = "row.row",
         num_components = num_components,
-        clip = TRUE
-      ),
-      noisy = m,
-      threshold = threshold,
-      use_noise_cut = use_noise_cut,
-      m_coef = m_coef
-    ),
-    col.row.esprit = threshold_binary(
-      denoised = new_cssa_denoise_by_method(
-        m,
-        method = "col.row",
-        num_components = num_components,
+        frequency_grid_multiplier = frequency_grid_multiplier,
         clip = TRUE
       ),
       noisy = m,
@@ -342,6 +551,27 @@ parameter_preprocess_binary <- function(m,
       m_coef = m_coef
     ),
     max.row = row_max_binary(m, k = k),
+    median = threshold_binary(
+      denoised = median_denoise(m, n = 3L),
+      noisy = m,
+      threshold = threshold,
+      use_noise_cut = use_noise_cut,
+      m_coef = m_coef
+    ),
+    wiener = threshold_binary(
+      denoised = wiener_denoise(m, ksize = 5L),
+      noisy = m,
+      threshold = threshold,
+      use_noise_cut = use_noise_cut,
+      m_coef = m_coef
+    ),
+    bm3d = threshold_binary(
+      denoised = bm3d_denoise(m, sigma_noise = sigma_noise),
+      noisy = m,
+      threshold = threshold,
+      use_noise_cut = use_noise_cut,
+      m_coef = m_coef
+    ),
     stop("Unknown parameter estimation method: ", method)
   )
 }
@@ -356,6 +586,9 @@ run_parameter_hough_case <- function(method,
                                      use_noise_cut = TRUE,
                                      m_coef = 1,
                                      num_components = 1L,
+                                     frequency_grid_multiplier = 1,
+                                     rank_source = NA_character_,
+                                     auto_rank = NA_integer_,
                                      k = 1L,
                                      rho_step = 0.3,
                                      theta_step = 0.03,
@@ -383,6 +616,8 @@ run_parameter_hough_case <- function(method,
     use_noise_cut = use_noise_cut,
     m_coef = m_coef,
     num_components = num_components,
+    frequency_grid_multiplier = frequency_grid_multiplier,
+    sigma_noise = sigma,
     k = k
   )
 
@@ -417,6 +652,9 @@ run_parameter_hough_case <- function(method,
     m_coef = m_coef,
     threshold = threshold,
     num_components = num_components,
+    cssa_rank_source = rank_source,
+    cssa_auto_rank = auto_rank,
+    frequency_grid_multiplier = frequency_grid_multiplier,
     k = k,
     threshold_value = processed$threshold_value,
     noise_sd = processed$noise_sd,
@@ -433,30 +671,77 @@ run_parameter_hough_case <- function(method,
 
 make_parameter_methods <- function(use_esprit = FALSE,
                                    threshold_multiplier = 1,
-                                   num_components = 1L,
+                                   lines = NULL,
+                                   n_row = 100L,
+                                   n_col = 100L,
+                                   cssa_components = NA,
                                    max_row_k = NA_integer_) {
-  num_components <- max(1L, as.integer(num_components)[1L])
+  if (is.null(lines)) {
+    lines <- data.frame(a = 1, b = 0, intensity = 1)
+  }
+  lines <- normalize_config_lines(lines)
+  row_rank <- resolve_method_rank(
+    "row.row",
+    lines = lines,
+    n_row = n_row,
+    n_col = n_col,
+    cssa_components = cssa_components
+  )
+  col_rank <- resolve_method_rank(
+    "col.row",
+    lines = lines,
+    n_row = n_row,
+    n_col = n_col,
+    cssa_components = cssa_components
+  )
+  row_frequency_grid_multiplier <- 1L
+  col_frequency_grid_multiplier <- esprit_grid_multiplier_from_lines(lines)
+
   if (length(max_row_k) == 0L || is.na(max_row_k)) {
-    max_row_k <- num_components
+    max_row_k <- nrow(lines)
   }
   max_row_k <- max(1L, as.integer(max_row_k)[1L])
 
   if (isTRUE(use_esprit)) {
-    method <- c("row.row.esprit", "col.row.esprit", "max.row")
-    label <- c("CSSA ROW.ROW + ESPRIT", "CSSA COL.ROW + ESPRIT", "MAX.ROW")
+    method <- "row.row.esprit"
+    label <- "CSSA ROW.ROW + ESPRIT"
+    use_noise_cut <- TRUE
+    m_coef <- threshold_multiplier
+    num_components <- row_rank$value
+    cssa_rank_source <- row_rank$source
+    cssa_auto_rank <- row_rank$auto
+    frequency_grid_multiplier <- row_frequency_grid_multiplier
+    k <- 1L
   } else {
     method <- c("row.row", "col.row", "max.row")
     label <- c("CSSA ROW.ROW", "CSSA COL.ROW", "MAX.ROW")
+    use_noise_cut <- c(TRUE, TRUE, FALSE)
+    m_coef <- c(threshold_multiplier, threshold_multiplier, NA_real_)
+    num_components <- c(row_rank$value, col_rank$value, max_row_k)
+    cssa_rank_source <- c(row_rank$source, col_rank$source, "k")
+    cssa_auto_rank <- c(row_rank$auto, col_rank$auto, nrow(lines))
+    frequency_grid_multiplier <- c(row_frequency_grid_multiplier, col_frequency_grid_multiplier, 1L)
+    k <- c(1L, 1L, max_row_k)
+  }
+
+  filter_method <- if (isTRUE(use_esprit)) character(0) else c("median", "wiener")
+  filter_label <- if (isTRUE(use_esprit)) character(0) else c("Median", "Wiener")
+  if (!isTRUE(use_esprit) && bm3d_available) {
+    filter_method <- c(filter_method, "bm3d")
+    filter_label <- c(filter_label, "BM3D")
   }
 
   data.frame(
-    method = method,
-    label = label,
-    use_noise_cut = c(TRUE, TRUE, FALSE),
-    m_coef = c(threshold_multiplier, threshold_multiplier, NA_real_),
-    threshold = c(NA_real_, NA_real_, NA_real_),
-    num_components = c(num_components, num_components, num_components),
-    k = c(1L, 1L, max_row_k),
+    method = c(method, filter_method),
+    label = c(label, filter_label),
+    use_noise_cut = c(use_noise_cut, rep(TRUE, length(filter_method))),
+    m_coef = c(m_coef, rep(threshold_multiplier, length(filter_method))),
+    threshold = rep(NA_real_, length(method) + length(filter_method)),
+    num_components = c(num_components, rep(0L, length(filter_method))),
+    cssa_rank_source = c(cssa_rank_source, rep("filter", length(filter_method))),
+    cssa_auto_rank = c(cssa_auto_rank, rep(0L, length(filter_method))),
+    frequency_grid_multiplier = c(frequency_grid_multiplier, rep(1L, length(filter_method))),
+    k = c(k, rep(NA_integer_, length(filter_method))),
     stringsAsFactors = FALSE
   )
 }
@@ -465,19 +750,22 @@ make_parameter_methods <- function(use_esprit = FALSE,
 ```{r, fig.width=9, fig.height=4}
 set.seed(2026)
 
-demo_cssa_components <- 3L
+demo_cssa_components <- NA_integer_
 demo_max_row_k <- 2L
 demo_line_method <- "default"
-demo_methods <- make_parameter_methods(
-  use_esprit = FALSE,
-  threshold_multiplier = 1,
-  num_components = demo_cssa_components,
-  max_row_k = demo_max_row_k
-)
 demo_lines <- data.frame(
   a = c(2, -1),
   b = c(-1, 101),
   intensity = c(0.8, 0.5)
+)
+demo_methods <- make_parameter_methods(
+  use_esprit = FALSE,
+  threshold_multiplier = 1,
+  lines = demo_lines,
+  n_row = 100L,
+  n_col = 100L,
+  cssa_components = demo_cssa_components,
+  max_row_k = demo_max_row_k
 )
 demo_clean <- make_config_matrix(
   demo_lines,
@@ -492,7 +780,7 @@ demo_row_row <- cssa_method_binary(
   use_noise_cut = demo_methods$use_noise_cut[1L],
   m_coef = demo_methods$m_coef[1L],
   threshold = demo_methods$threshold[1L],
-  num_components = demo_cssa_components
+  num_components = demo_methods$num_components[1L]
 )
 demo_col_row <- cssa_method_binary(
   demo_noisy,
@@ -500,7 +788,7 @@ demo_col_row <- cssa_method_binary(
   use_noise_cut = demo_methods$use_noise_cut[2L],
   m_coef = demo_methods$m_coef[2L],
   threshold = demo_methods$threshold[2L],
-  num_components = demo_cssa_components
+  num_components = demo_methods$num_components[2L]
 )
 demo_max_row <- row_max_binary(demo_noisy, k = demo_max_row_k)
 
@@ -561,18 +849,43 @@ line_configuration_table <- data.frame(
   row.names = NULL
 )
 
-comparison_n_rep <- 5
+comparison_n_rep <- 100
 comparison_sigmas <- c(0.05, 0.2)
-comparison_threshold_multipliers <- c(1, 2)
+comparison_threshold_multipliers <- c(0, 1, 2)
 
-comparison_cssa_components <- 3
+comparison_cssa_components <- NA_integer_
 comparison_max_row_k <- NA_integer_
 
 comparison_seed <- 2026L
-comparison_rho_step <- 0.2
+comparison_rho_step <- 0.02
 comparison_theta_step <- 0.002
 
 dt_table(line_configuration_table, caption = "Line configurations")
+
+auto_method_settings <- do.call(rbind, lapply(names(parameter_configs), function(config_id) {
+  lines <- normalize_config_lines(parameter_configs[[config_id]])
+  methods <- make_parameter_methods(
+    use_esprit = TRUE,
+    threshold_multiplier = 1,
+    lines = lines,
+    n_row = comparison_n_row,
+    n_col = comparison_n_col,
+    cssa_components = comparison_cssa_components,
+    max_row_k = comparison_max_row_k
+  )
+  data.frame(
+    parent_config_id = config_id,
+    method = methods$label,
+    components = methods$num_components,
+    source = methods$cssa_rank_source,
+    auto_rank = methods$cssa_auto_rank,
+    frequency_grid_multiplier = methods$frequency_grid_multiplier,
+    k = methods$k,
+    stringsAsFactors = FALSE
+  )
+}))
+rownames(auto_method_settings) <- NULL
+dt_table(auto_method_settings, caption = "Automatic ranks and ESPRIT grid")
 ```
 
 ```{r, include=FALSE}
@@ -651,7 +964,8 @@ summarise_parameter_samples <- function(samples, methods, n_rep) {
   out <- aggregate(
     cbind(rho_mse, theta_mse, active_pixels, threshold_value, noise_sd) ~
       sigma + threshold_multiplier + threshold_label + variant +
-      parent_config_id + config_id + line_index + method_code + method,
+      parent_config_id + config_id + line_index + method_code + method +
+      num_components + cssa_rank_source + cssa_auto_rank + frequency_grid_multiplier,
     data = samples,
     FUN = mean_or_na,
     na.action = na.pass
@@ -688,20 +1002,27 @@ run_row_col_max_comparison <- function(sigma = 0.2,
                                        cssa_components = comparison_cssa_components,
                                        max_row_k = comparison_max_row_k,
                                        line_method = comparison_line_method,
-                                       seed = comparison_seed) {
+                                       seed = comparison_seed,
+                                       return_samples = FALSE) {
   set.seed(seed + as.integer(round(1000 * sigma)))
   variant <- if (isTRUE(use_esprit)) "esprit" else "ordinary"
-  threshold_label <- paste0(threshold_multiplier, " sigma")
+  threshold_label <- if (threshold_multiplier <= 0) {
+    "no threshold"
+  } else {
+    paste0(threshold_multiplier, " sigma")
+  }
 
   samples <- do.call(rbind, lapply(names(parameter_configs), function(config_id) {
     lines <- normalize_config_lines(parameter_configs[[config_id]])
     num_lines <- nrow(lines)
-    cur_cssa_components <- resolve_positive_count(cssa_components, num_lines)
     cur_max_row_k <- resolve_positive_count(max_row_k, num_lines)
     methods <- make_parameter_methods(
       use_esprit = use_esprit,
       threshold_multiplier = threshold_multiplier,
-      num_components = cur_cssa_components,
+      lines = lines,
+      n_row = comparison_n_row,
+      n_col = comparison_n_col,
+      cssa_components = cssa_components,
       max_row_k = cur_max_row_k
     )
     clean <- make_config_matrix(
@@ -726,6 +1047,9 @@ run_row_col_max_comparison <- function(sigma = 0.2,
           use_noise_cut = methods$use_noise_cut[method_i],
           m_coef = methods$m_coef[method_i],
           num_components = methods$num_components[method_i],
+          frequency_grid_multiplier = methods$frequency_grid_multiplier[method_i],
+          rank_source = methods$cssa_rank_source[method_i],
+          auto_rank = methods$cssa_auto_rank[method_i],
           k = methods$k[method_i],
           rho_step = comparison_rho_step,
           theta_step = comparison_theta_step,
@@ -749,10 +1073,19 @@ run_row_col_max_comparison <- function(sigma = 0.2,
   method_order <- make_parameter_methods(
     use_esprit = use_esprit,
     threshold_multiplier = threshold_multiplier,
-    num_components = 1L,
+    lines = normalize_config_lines(parameter_configs[[1L]]),
+    n_row = comparison_n_row,
+    n_col = comparison_n_col,
+    cssa_components = NA,
     max_row_k = 1L
   )
-  summarise_parameter_samples(samples, methods = method_order, n_rep = n_rep)
+  summary <- summarise_parameter_samples(samples, methods = method_order, n_rep = n_rep)
+
+  if (isTRUE(return_samples)) {
+    return(list(summary = summary, samples = samples))
+  }
+
+  summary
 }
 
 run_all_comparisons <- function(sigmas = comparison_sigmas,
@@ -760,14 +1093,21 @@ run_all_comparisons <- function(sigmas = comparison_sigmas,
                                 n_rep = comparison_n_rep,
                                 cssa_components = comparison_cssa_components,
                                 max_row_k = comparison_max_row_k,
-                                line_method = comparison_line_method) {
-  grid <- expand.grid(
+                                line_method = comparison_line_method,
+                                return_samples = FALSE) {
+  ordinary_grid <- expand.grid(
     sigma = sigmas,
     threshold_multiplier = threshold_multipliers,
-    use_esprit = c(FALSE, TRUE)
+    use_esprit = FALSE
   )
+  esprit_grid <- expand.grid(
+    sigma = sigmas,
+    threshold_multiplier = threshold_multipliers,
+    use_esprit = TRUE
+  )
+  grid <- rbind(ordinary_grid, esprit_grid)
 
-  do.call(rbind, lapply(seq_len(nrow(grid)), function(i) {
+  results <- lapply(seq_len(nrow(grid)), function(i) {
     run_row_col_max_comparison(
       sigma = grid$sigma[i],
       threshold_multiplier = grid$threshold_multiplier[i],
@@ -775,9 +1115,19 @@ run_all_comparisons <- function(sigmas = comparison_sigmas,
       n_rep = n_rep,
       cssa_components = cssa_components,
       max_row_k = max_row_k,
-      line_method = line_method
+      line_method = line_method,
+      return_samples = return_samples
     )
-  }))
+  })
+
+  if (isTRUE(return_samples)) {
+    return(list(
+      summary = do.call(rbind, lapply(results, `[[`, "summary")),
+      samples = do.call(rbind, lapply(results, `[[`, "samples"))
+    ))
+  }
+
+  do.call(rbind, results)
 }
 
 xtab_df <- function(x, value_col) {
@@ -807,85 +1157,373 @@ ideal_xtab_df <- function(cur, value_col) {
   xtab_df(ideal_cur, value_col)
 }
 
-metric_labels <- c(
+chapter3_table_output_dir <- file.path("generated_tables", "chapter3")
+
+metric_order <- c("mean_rho_mse", "mean_theta_mse", "mean_active_pixels")
+metric_labels_display <- c(
   mean_rho_mse = "MSE rho",
   mean_theta_mse = "MSE theta",
   mean_active_pixels = "active pixels"
 )
+metric_labels_latex <- c(
+  mean_rho_mse = "MSE по $\\rho$",
+  mean_theta_mse = "MSE по $\\theta$",
+  mean_active_pixels = "Активные пиксели"
+)
 
-comparison_tables <- function(summary_df, sigma, variant) {
-  blocks <- list()
-  cur0 <- summary_df[
-    summary_df$sigma == sigma & summary_df$variant == variant,
-    ,
-    drop = FALSE
-  ]
+method_labels_display <- c(
+  row = "ROW.ROW",
+  col = "COL.ROW",
+  max = "MAX.ROW",
+  median = "Median",
+  wiener = "Wiener",
+  row_esprit = "ROW.ROW + ESPRIT"
+)
+method_labels_latex <- c(
+  row = "\\texttt{ROW.ROW}",
+  col = "\\texttt{COL.ROW}",
+  max = "\\texttt{MAX.ROW}",
+  median = "Median",
+  wiener = "Wiener",
+  row_esprit = "\\texttt{ROW.ROW}+ESPRIT"
+)
 
-  for (thr in sort(unique(cur0$threshold_multiplier))) {
-    cur <- subset(cur0, threshold_multiplier == thr)
-    title <- sprintf(
-      "%s, sigma = %.2f, threshold = %s",
-      if (variant == "esprit") "ESPRIT CSSA" else "CSSA",
-      sigma,
-      cur$threshold_label[1L]
-    )
-    blocks[[length(blocks) + 1L]] <- htmltools::tags$h4(title)
-    blocks[[length(blocks) + 1L]] <- dt_table(
-      ideal_xtab_df(cur, "ideal_rho_mse"),
-      caption = paste(title, "- ideal HT discretization MSE rho, no noise")
-    )
-    blocks[[length(blocks) + 1L]] <- dt_table(
-      ideal_xtab_df(cur, "ideal_theta_mse"),
-      caption = paste(title, "- ideal HT discretization MSE theta, no noise")
-    )
+sigma_suffix <- function(sigma) {
+  sprintf("%03d", as.integer(round(100 * as.numeric(sigma))))
+}
 
-    for (metric in names(metric_labels)) {
-      blocks[[length(blocks) + 1L]] <- dt_table(
-        xtab_df(cur, metric),
-        caption = paste(title, "-", metric_labels[[metric]])
+threshold_suffix <- function(threshold_multiplier) {
+  if (threshold_multiplier <= 0) {
+    return("nothr")
+  }
+  paste0("thr", as.integer(threshold_multiplier))
+}
+
+threshold_caption <- function(threshold_multiplier) {
+  if (threshold_multiplier <= 0) {
+    return("без порога")
+  }
+  paste0("порог $", threshold_multiplier, "\\hat\\sigma$")
+}
+
+threshold_caption_display <- function(threshold_multiplier) {
+  if (threshold_multiplier <= 0) {
+    return("no threshold")
+  }
+  paste0("threshold = ", threshold_multiplier, " sigma-hat")
+}
+
+make_dynamic_method_spec <- function(threshold_multiplier) {
+  ordinary <- data.frame(
+    column_key = c("row", "col", "max", "median", "wiener"),
+    method = c("CSSA ROW.ROW", "CSSA COL.ROW", "MAX.ROW", "Median", "Wiener"),
+    variant = rep("ordinary", 5L),
+    threshold_multiplier = rep(threshold_multiplier, 5L),
+    stringsAsFactors = FALSE
+  )
+  esprit <- data.frame(
+    column_key = "row_esprit",
+    method = "CSSA ROW.ROW + ESPRIT",
+    variant = "esprit",
+    threshold_multiplier = threshold_multiplier,
+    stringsAsFactors = FALSE
+  )
+
+  out <- list()
+  if (threshold_multiplier %in% comparison_threshold_multipliers) {
+    out[[length(out) + 1L]] <- ordinary
+  }
+  out[[length(out) + 1L]] <- esprit
+  do.call(rbind, out)
+}
+
+make_dynamic_chapter3_table_specs <- function() {
+  thresholds <- sort(unique(comparison_threshold_multipliers))
+
+  specs <- list()
+  for (sigma in comparison_sigmas) {
+    for (threshold_multiplier in thresholds) {
+      methods <- make_dynamic_method_spec(threshold_multiplier)
+      if (is.null(methods) || nrow(methods) == 0L) {
+        next
+      }
+      id <- paste0(
+        "ch3_two_",
+        sigma_suffix(sigma),
+        "_",
+        threshold_suffix(threshold_multiplier)
+      )
+      specs[[length(specs) + 1L]] <- list(
+        id = id,
+        sigma = sigma,
+        methods = methods,
+        caption_display = paste0(
+          "Two lines: sigma = ",
+          formatC(sigma, format = "f", digits = 2),
+          ", ",
+          threshold_caption_display(threshold_multiplier)
+        ),
+        caption_latex = paste0(
+          "Две прямые: $\\sigma=",
+          formatC(sigma, format = "f", digits = 2),
+          "$, ",
+          threshold_caption(threshold_multiplier)
+        ),
+        label = paste0("tab:", id)
       )
     }
   }
+  specs
+}
 
-  do.call(htmltools::tagList, blocks)
+chapter3_table_specs <- make_dynamic_chapter3_table_specs()
+
+format_metric_value <- function(x, metric) {
+  if (is.na(x)) {
+    return("")
+  }
+  if (metric == "mean_active_pixels") {
+    out <- formatC(x, format = "f", digits = 1)
+    return(sub("\\.0$", "", out))
+  }
+  if (x == 0) {
+    return("0")
+  }
+  abs_x <- abs(x)
+  if (metric == "mean_theta_mse") {
+    if (abs_x < 1e-3) {
+      return(sprintf("%.2e", x))
+    }
+    return(sprintf("%.4f", x))
+  }
+  if (abs_x < 0.01) {
+    return(sprintf("%.2e", x))
+  }
+  if (abs_x >= 100) {
+    return(sprintf("%.1f", x))
+  }
+  sprintf("%.4f", x)
+}
+
+format_config_label <- function(config_id) {
+  compact <- gsub("\\s+", "", config_id)
+  parts <- strsplit(gsub("[()]", "", compact), ",", fixed = FALSE)[[1L]]
+  if (length(parts) >= 3L) {
+    paste0("(", parts[1L], ",", parts[2L], ";c=", parts[3L], ")")
+  } else {
+    compact
+  }
+}
+
+latex_table_lines <- function(df, caption, label) {
+  n_cols <- ncol(df)
+  header <- paste(colnames(df), collapse = " & ")
+  align <- paste0("|l|l|", paste(rep("c", n_cols - 2L), collapse = "|"), "|")
+  body <- unlist(lapply(seq_len(nrow(df)), function(i) {
+    c(paste(df[i, ], collapse = " & "), "\\\\", "\\hline")
+  }))
+
+  c(
+    "\\begin{table}[H]",
+    "\\centering",
+    sprintf("\\caption{%s}", caption),
+    sprintf("\\label{%s}", label),
+    "\\resizebox{\\textwidth}{!}{%",
+    sprintf("\\begin{tabular}{%s}", align),
+    "\\hline",
+    header,
+    "\\\\",
+    "\\hline",
+    body,
+    "\\end{tabular}%",
+    "}",
+    "\\end{table}"
+  )
+}
+
+build_combined_table <- function(summary_df, sigma_value, method_spec, caption_display, caption_latex, label) {
+  config_order <- sort(unique(parameter_config_info$config_id))
+  metric_wide <- lapply(metric_order, function(metric) {
+    rows <- lapply(seq_len(nrow(method_spec)), function(i) {
+      src <- method_spec[i, ]
+      cur <- subset(
+        summary_df,
+        sigma == sigma_value &
+          variant == src$variant &
+          threshold_multiplier == src$threshold_multiplier &
+          method == src$method
+      )
+      out <- cur[, c("config_id", metric), drop = FALSE]
+      names(out)[2L] <- src$column_key
+      out
+    })
+    merged <- Reduce(function(x, y) merge(x, y, by = "config_id", all = TRUE, sort = FALSE), rows)
+    merged[match(config_order, merged$config_id), , drop = FALSE]
+  })
+  names(metric_wide) <- metric_order
+
+  column_keys <- method_spec$column_key
+  display_rows <- list()
+  latex_rows <- list()
+  for (config_id in config_order) {
+    for (metric in metric_order) {
+      cur <- metric_wide[[metric]]
+      row_idx <- match(config_id, cur$config_id)
+      values <- vapply(column_keys, function(key) format_metric_value(cur[row_idx, key], metric), character(1))
+      display_rows[[length(display_rows) + 1L]] <- c(if (metric == metric_order[1L]) format_config_label(config_id) else "", metric_labels_display[[metric]], values)
+      latex_rows[[length(latex_rows) + 1L]] <- c(if (metric == metric_order[1L]) paste0("$", format_config_label(config_id), "$") else "", metric_labels_latex[[metric]], values)
+    }
+  }
+
+  display_df <- as.data.frame(do.call(rbind, display_rows), stringsAsFactors = FALSE)
+  latex_df <- as.data.frame(do.call(rbind, latex_rows), stringsAsFactors = FALSE)
+  names(display_df) <- c("Configuration", "Metric", unname(method_labels_display[column_keys]))
+  names(latex_df) <- c("Конфигурация", "Метрика", unname(method_labels_latex[column_keys]))
+
+  list(display = display_df, latex = latex_df, caption_display = caption_display, caption_latex = caption_latex, label = label)
+}
+
+export_combined_table <- function(table_obj, file_path) {
+  dir.create(dirname(file_path), recursive = TRUE, showWarnings = FALSE)
+  writeLines(latex_table_lines(table_obj$latex, table_obj$caption_latex, table_obj$label), con = file_path, useBytes = TRUE)
+  invisible(file_path)
+}
+
+render_chapter3_table <- function(summary_df, spec) {
+  table_obj <- build_combined_table(
+    summary_df = summary_df,
+    sigma_value = spec$sigma,
+    method_spec = spec$methods,
+    caption_display = spec$caption_display,
+    caption_latex = spec$caption_latex,
+    label = spec$label
+  )
+  export_combined_table(table_obj, file.path(chapter3_table_output_dir, paste0(spec$id, ".tex")))
+  dt_table(table_obj$display, caption = table_obj$caption_display)
+}
+
+export_all_chapter3_tables <- function(summary_df, specs = chapter3_table_specs) {
+  dir.create(chapter3_table_output_dir, recursive = TRUE, showWarnings = FALSE)
+  invisible(lapply(specs, function(spec) {
+    table_obj <- build_combined_table(
+      summary_df = summary_df,
+      sigma_value = spec$sigma,
+      method_spec = spec$methods,
+      caption_display = spec$caption_display,
+      caption_latex = spec$caption_latex,
+      label = spec$label
+    )
+    export_combined_table(table_obj, file.path(chapter3_table_output_dir, paste0(spec$id, ".tex")))
+  }))
+  data.frame(file = file.path(chapter3_table_output_dir, paste0(vapply(specs, `[[`, character(1), "id"), ".tex")), stringsAsFactors = FALSE)
+}
+
+chapter3_data_output_dir <- file.path("generated_tables", "chapter3_data")
+
+experiment_parameter_table <- function(prefix) {
+  data.frame(
+    prefix = prefix,
+    n_row = comparison_n_row,
+    n_col = comparison_n_col,
+    n_rep = comparison_n_rep,
+    rho_step = comparison_rho_step,
+    theta_step = comparison_theta_step,
+    sigmas = paste(comparison_sigmas, collapse = ", "),
+    threshold_multipliers = paste(comparison_threshold_multipliers, collapse = ", "),
+    cssa_components = paste(comparison_cssa_components, collapse = ", "),
+    max_row_k = paste(comparison_max_row_k, collapse = ", "),
+    line_method = comparison_line_method,
+    seed = comparison_seed,
+    stringsAsFactors = FALSE
+  )
+}
+
+write_export_csv <- function(x, path) {
+  utils::write.csv(x, path, row.names = FALSE, fileEncoding = "UTF-8")
+  invisible(path)
+}
+
+export_comparison_data <- function(summary_df, samples_df, prefix) {
+  dir.create(chapter3_data_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+  outputs <- data.frame(
+    kind = c(
+      "raw_samples_csv",
+      "raw_samples_rds",
+      "summary_csv",
+      "summary_rds",
+      "ideal_discretization_csv",
+      "line_configurations_csv",
+      "auto_method_settings_csv",
+      "experiment_parameters_csv"
+    ),
+    file = file.path(
+      chapter3_data_output_dir,
+      paste0(
+        prefix,
+        c(
+          "_raw_samples.csv",
+          "_raw_samples.rds",
+          "_summary.csv",
+          "_summary.rds",
+          "_ideal_discretization.csv",
+          "_line_configurations.csv",
+          "_auto_method_settings.csv",
+          "_experiment_parameters.csv"
+        )
+      )
+    ),
+    stringsAsFactors = FALSE
+  )
+
+  write_export_csv(samples_df, outputs$file[outputs$kind == "raw_samples_csv"])
+  saveRDS(samples_df, outputs$file[outputs$kind == "raw_samples_rds"])
+  write_export_csv(summary_df, outputs$file[outputs$kind == "summary_csv"])
+  saveRDS(summary_df, outputs$file[outputs$kind == "summary_rds"])
+  write_export_csv(ideal_discretization_summary, outputs$file[outputs$kind == "ideal_discretization_csv"])
+  write_export_csv(line_configuration_table, outputs$file[outputs$kind == "line_configurations_csv"])
+  write_export_csv(auto_method_settings, outputs$file[outputs$kind == "auto_method_settings_csv"])
+  write_export_csv(experiment_parameter_table(prefix), outputs$file[outputs$kind == "experiment_parameters_csv"])
+
+  outputs
 }
 ```
 
 ```{r}
-comparison_summary <- run_all_comparisons()
+comparison_results <- run_all_comparisons(return_samples = TRUE)
+comparison_summary <- comparison_results$summary
+comparison_samples <- comparison_results$samples
+chapter3_exported_files <- export_all_chapter3_tables(comparison_summary)
+chapter3_exported_data <- export_comparison_data(
+  comparison_summary,
+  comparison_samples,
+  prefix = "04_two_lines"
+)
 ```
 
-## CSSA, шум 0.05
-
-Здесь сравниваются `CSSA ROW.ROW`, `CSSA COL.ROW` и `MAX.ROW` без ESPRIT при слабом шуме. Порог --- 1 или 2 $\sigma$
+## Generated comparison tables
 
 ```{r}
-comparison_tables(comparison_summary, sigma = 0.05, variant = "ordinary")
+htmltools::tagList(lapply(chapter3_table_specs, function(spec) {
+  htmltools::tagList(
+    htmltools::tags$h3(spec$caption_display),
+    render_chapter3_table(comparison_summary, spec)
+  )
+}))
 ```
 
-
-
-## CSSA, шум 0.20
-
-То же сравнение без ESPRIT, но при шуме `sigma = 0.20`.
+## Exported files
 
 ```{r}
-comparison_tables(comparison_summary, sigma = 0.2, variant = "ordinary")
+dt_table(chapter3_exported_files, caption = "Saved LaTeX tables")
 ```
-
-## ESPRIT CSSA, шум 0.05
-
-Здесь `ROW.ROW` и `COL.ROW` заменены на версии с ESPRIT и корректировкой частоты. `MAX.ROW` оставлен тем же для контроля.
 
 ```{r}
-comparison_tables(comparison_summary, sigma = 0.05, variant = "esprit")
+dt_table(chapter3_exported_data, caption = "Saved data files")
 ```
-
-## ESPRIT CSSA, шум 0.20
-
-То же сравнение с ESPRIT при шуме `sigma = 0.20`.
 
 ```{r}
-comparison_tables(comparison_summary, sigma = 0.2, variant = "esprit")
+dt_table(utils::head(comparison_samples, 200), caption = "Raw samples preview")
 ```
+
 

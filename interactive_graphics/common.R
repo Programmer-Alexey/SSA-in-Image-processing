@@ -159,7 +159,35 @@ make_line_image <- function(n_row, n_col, a, b, intensity = 1, line_method = "br
     add.line(a = a, b = b, method = normalize_line_method(line_method), intensity = intensity)
 }
 
+cssa_component_limit <- function(n, L = (n + 1L) %/% 2L) {
+  n <- as.integer(n)[1L]
+  L <- as.integer(L)[1L]
+  if (!is.finite(n) || is.na(n) || n < 1L) {
+    return(1L)
+  }
+  if (!is.finite(L) || is.na(L) || L < 1L) {
+    L <- (n + 1L) %/% 2L
+  }
+  K <- n - L + 1L
+  max(1L, min(L, K))
+}
+
+cssa_component_limit_for_matrix <- function(m, method) {
+  method <- match.arg(method, c("col.col", "col.row", "row.col", "row.row"))
+  if (method %in% c("col.col", "col.row")) {
+    return(cssa_component_limit(nrow(m)))
+  }
+  cssa_component_limit(ncol(m))
+}
+
 cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
+  m <- as.matrix(m)
+  num_of_lines <- suppressWarnings(as.integer(num_of_lines)[1L])
+  if (!is.finite(num_of_lines) || is.na(num_of_lines) || num_of_lines < 1L) {
+    num_of_lines <- 1L
+  }
+  num_of_lines <- min(num_of_lines, cssa_component_limit_for_matrix(m, method))
+
   cleaned <- switch(
     method,
     "col.col" = m |> dft() |> cssa.col(num.line = num_of_lines) |> idft.col() |> Re(),
@@ -173,9 +201,19 @@ cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
 
 esprit_project_cssa_corrected <- function(x,
                                           L = (length(x) + 1L) %/% 2L,
-                                          num_components = 1L) {
+                                          num_components = 1L,
+                                          frequency_grid_multiplier = 1) {
   x <- as.vector(x)
   N <- length(x)
+  num_components <- suppressWarnings(as.integer(num_components)[1L])
+  if (!is.finite(num_components) || is.na(num_components) || num_components < 1L) {
+    num_components <- 1L
+  }
+  num_components <- min(num_components, cssa_component_limit(N, L = L))
+  frequency_grid_multiplier <- as.numeric(frequency_grid_multiplier)[1L]
+  if (!is.finite(frequency_grid_multiplier) || frequency_grid_multiplier <= 0) {
+    frequency_grid_multiplier <- 1
+  }
 
   tryCatch({
     fit <- Rssa::ssa(x, L = L, kind = "cssa", svd.method = "svd")
@@ -186,19 +224,26 @@ esprit_project_cssa_corrected <- function(x,
       normalize.roots = FALSE
     )
 
-    num_components <- min(
-      as.integer(num_components)[1L],
-      length(esprit_res$frequencies)
-    )
+    num_components <- min(num_components, length(esprit_res$frequencies))
     if (num_components < 1L) {
       return(x)
     }
 
-    omega <- round(esprit_res$frequencies[seq_len(num_components)] * N) / N
+    signal_rec <- Rssa::reconstruct(
+      fit,
+      groups = list(signal = seq_len(num_components))
+    )
+    x_signal <- as.vector(signal_rec$signal)
+    if (length(x_signal) != N) {
+      x_signal <- x
+    }
+
+    grid_size <- frequency_grid_multiplier * N
+    omega <- round(esprit_res$frequencies[seq_len(num_components)] * grid_size) / grid_size
     omega <- unique(omega)
     mu <- exp(2 * pi * omega * 1i)
     basis <- outer(0:(N - 1L), mu, function(i, z) z ^ i)
-    amplitudes <- as.vector(qr.solve(basis, x))
+    amplitudes <- as.vector(qr.solve(basis, x_signal))
 
     as.vector(basis %*% amplitudes)
   }, error = function(e) {
@@ -206,7 +251,10 @@ esprit_project_cssa_corrected <- function(x,
   })
 }
 
-esprit_cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
+esprit_cssa_denoise <- function(m,
+                                num_of_lines = 1L,
+                                method = "row.row",
+                                frequency_grid_multiplier = 1) {
   method <- match.arg(method, c("row.row", "col.row"))
   m <- as.matrix(m)
   z <- dft(m)
@@ -219,7 +267,8 @@ esprit_cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
         as.complex(esprit_project_cssa_corrected(
           z[i, ],
           L = L,
-          num_components = num_of_lines
+          num_components = num_of_lines,
+          frequency_grid_multiplier = frequency_grid_multiplier
         ))
       }, complex(ncol(z))))
     },
@@ -229,7 +278,8 @@ esprit_cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
         as.complex(esprit_project_cssa_corrected(
           z[, j],
           L = L,
-          num_components = num_of_lines
+          num_components = num_of_lines,
+          frequency_grid_multiplier = frequency_grid_multiplier
         ))
       }, complex(nrow(z)))
     }
@@ -240,7 +290,11 @@ esprit_cssa_denoise <- function(m, num_of_lines = 1L, method = "row.row") {
 
 max_row_denoise <- function(m, k = 1L) {
   m <- as.matrix(m)
-  k <- max(1L, min(as.integer(k)[1L], ncol(m)))
+  k <- suppressWarnings(as.integer(k)[1L])
+  if (!is.finite(k) || is.na(k)) {
+    k <- 1L
+  }
+  k <- max(1L, min(k, ncol(m)))
   out <- matrix(0, nrow = nrow(m), ncol = ncol(m))
 
   for (i in seq_len(nrow(m))) {
@@ -286,12 +340,21 @@ available_detectors <- function(num_of_lines,
                                 include_quantile = FALSE,
                                 include_esprit = TRUE,
                                 max_row_k = 1L,
-                                cssa_components = num_of_lines) {
+                                cssa_components = num_of_lines,
+                                esprit_components = cssa_components,
+                                frequency_grid_multiplier = 1,
+                                cfg = NULL,
+                                line_method = "bresenham") {
   cssa_components <- suppressWarnings(as.integer(cssa_components)[1L])
   if (!is.finite(cssa_components) || is.na(cssa_components)) {
     cssa_components <- num_of_lines
   }
   cssa_components <- max(1L, cssa_components)
+  esprit_components <- suppressWarnings(as.integer(esprit_components)[1L])
+  if (!is.finite(esprit_components) || is.na(esprit_components)) {
+    esprit_components <- cssa_components
+  }
+  esprit_components <- max(1L, esprit_components)
 
   detectors <- list(
     cssa_row_row = function(m, sigma_noise) {
@@ -328,10 +391,20 @@ available_detectors <- function(num_of_lines,
       detectors,
       list(
         cssa_row_row_esprit = function(m, sigma_noise) {
-          esprit_cssa_denoise(m, num_of_lines = cssa_components, method = "row.row")
+          esprit_cssa_denoise(
+            m,
+            num_of_lines = esprit_components,
+            method = "row.row",
+            frequency_grid_multiplier = frequency_grid_multiplier
+          )
         },
         cssa_col_row_esprit = function(m, sigma_noise) {
-          esprit_cssa_denoise(m, num_of_lines = cssa_components, method = "col.row")
+          esprit_cssa_denoise(
+            m,
+            num_of_lines = esprit_components,
+            method = "col.row",
+            frequency_grid_multiplier = frequency_grid_multiplier
+          )
         }
       ),
       after = 2L
@@ -548,6 +621,87 @@ compute_err_by_line <- function(true, pred) {
   out
 }
 
+compute_err_with_missing <- function(true, pred, rho_step_ht = 1, theta_step_ht = 0.01) {
+  true <- as.matrix(true)
+  pred <- as.matrix(pred)
+  if (ncol(true) != 2 || ncol(pred) != 2) {
+    stop("true and pred must have two columns: rho and theta")
+  }
+
+  n_true <- nrow(true)
+  n_pred <- nrow(pred)
+  if (n_pred == n_true) {
+    return(compute_err(true, pred))
+  }
+
+  if (n_pred > n_true) {
+    best <- c(dr = Inf, dtheta = Inf)
+    pred_sets <- utils::combn(seq_len(n_pred), n_true, simplify = FALSE)
+    for (pred_idx in pred_sets) {
+      cur <- compute_err(true, pred[pred_idx, , drop = FALSE])
+      if (sum(cur) < sum(best)) {
+        best <- cur
+      }
+    }
+    return(best)
+  }
+
+  pair_err <- function(tr, tt, pr, pt) {
+    pt_alt <- (pt + pi) %% (2 * pi)
+    dtheta <- atan2(sin(tt - pt), cos(tt - pt))^2
+    dtheta_alt <- atan2(sin(tt - pt_alt), cos(tt - pt_alt))^2
+
+    loss_1 <- (tr - pr)^2 + dtheta
+    loss_2 <- (tr + pr)^2 + dtheta_alt
+
+    if (loss_1 <= loss_2) {
+      c(dr = (tr - pr)^2, dtheta = dtheta, total = loss_1)
+    } else {
+      c(dr = (tr + pr)^2, dtheta = dtheta_alt, total = loss_2)
+    }
+  }
+
+  all_perms <- function(v) {
+    if (length(v) == 1L) {
+      return(matrix(v, nrow = 1L))
+    }
+    out <- lapply(seq_along(v), function(i) {
+      cbind(v[i], all_perms(v[-i]))
+    })
+    do.call(rbind, out)
+  }
+
+  err <- c(dr = 0, dtheta = 0)
+  if (n_pred > 0L) {
+    best <- c(dr = Inf, dtheta = Inf, total = Inf)
+    true_sets <- utils::combn(seq_len(n_true), n_pred, simplify = FALSE)
+    pred_perms <- all_perms(seq_len(n_pred))
+    for (true_idx in true_sets) {
+      for (row_i in seq_len(nrow(pred_perms))) {
+        pred_idx <- pred_perms[row_i, ]
+        cur <- c(dr = 0, dtheta = 0, total = 0)
+        for (i in seq_along(true_idx)) {
+          pair <- pair_err(
+            true[true_idx[i], 1], true[true_idx[i], 2],
+            pred[pred_idx[i], 1], pred[pred_idx[i], 2]
+          )
+          cur <- cur + pair
+        }
+        if (cur["total"] < best["total"]) {
+          best <- cur
+        }
+      }
+    }
+    err <- c(dr = unname(best["dr"]), dtheta = unname(best["dtheta"]))
+  }
+
+  missing_n <- n_true - n_pred
+  c(
+    dr = unname(err["dr"]) + missing_n * max(as.numeric(rho_step_ht), 1)^2,
+    dtheta = unname(err["dtheta"]) + missing_n * max(as.numeric(theta_step_ht), 0.01)^2
+  )
+}
+
 parse_line_text <- function(text, expected_n = NULL) {
   lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
   lines <- trimws(lines)
@@ -612,6 +766,191 @@ line_config_ids <- function(lines_df) {
   sprintf("(%g, %g, %g)", lines_df$a, lines_df$b, lines_df$intensity)
 }
 
+line_display_ids <- function(lines_df) {
+  ids <- line_config_ids(lines_df)
+  sprintf("line %d: %s", seq_along(ids), ids)
+}
+
+integer_lcm <- function(x) {
+  x <- unique(abs(as.integer(x)))
+  x <- x[is.finite(x) & !is.na(x) & x > 0L]
+  if (length(x) == 0L) {
+    return(1L)
+  }
+
+  gcd_int <- function(a, b) {
+    a <- abs(as.integer(a))
+    b <- abs(as.integer(b))
+    while (b != 0L) {
+      r <- a %% b
+      a <- b
+      b <- r
+    }
+    a
+  }
+
+  as.integer(Reduce(function(a, b) abs(a * b) / gcd_int(a, b), x))
+}
+
+esprit_grid_multiplier_from_lines <- function(lines_df) {
+  lines_df <- as.data.frame(lines_df)
+  if (!"a" %in% names(lines_df)) {
+    return(1L)
+  }
+
+  a <- suppressWarnings(as.numeric(lines_df$a))
+  a <- a[is.finite(a) & !is.na(a)]
+  if (length(a) == 0L) {
+    return(1L)
+  }
+
+  a_int <- round(abs(a))
+  a_int[a_int < 1L] <- 1L
+  integer_lcm(a_int)
+}
+
+cssa_colrow_safe_rank_from_lines <- function(lines_df, n_row, n_col) {
+  lines_df <- as.data.frame(lines_df)
+  if (!all(c("a", "b") %in% names(lines_df))) {
+    return(1L)
+  }
+
+  a <- suppressWarnings(as.numeric(lines_df$a))
+  b <- suppressWarnings(as.numeric(lines_df$b))
+  keep <- is.finite(a) & !is.na(a) & is.finite(b) & !is.na(b)
+  if (!any(keep)) {
+    return(1L)
+  }
+
+  n_row <- as.integer(n_row)[1L]
+  n_col <- as.integer(n_col)[1L]
+  if (!is.finite(n_row) || is.na(n_row) || n_row < 1L) {
+    n_row <- 1L
+  }
+  if (!is.finite(n_col) || is.na(n_col) || n_col < 1L) {
+    n_col <- 1L
+  }
+
+  L <- (n_row + 1L) %/% 2L
+  K <- n_row - L + 1L
+  ranks <- vapply(which(keep), function(i) {
+    cur_a <- a[i]
+    cur_b <- b[i]
+    alpha <- abs(cur_a)
+    if (alpha < 1) {
+      alpha <- 1
+    }
+
+    if (cur_a > 0) {
+      y1 <- cur_a + cur_b
+      yN <- cur_a * n_col + cur_b
+    } else {
+      y1 <- n_row + 1 - (cur_a + cur_b)
+      yN <- n_row + 1 - (cur_a * n_col + cur_b)
+    }
+
+    max(1L, as.integer(floor(min(
+      L,
+      K,
+      max(yN, 0),
+      max(n_row + 1 - y1, 0),
+      max(alpha, y1) + max(n_row + 1 - yN - alpha, 0)
+    ))))
+  }, integer(1))
+
+  max(1L, as.integer(sum(ranks)))
+}
+
+cssa_rowrow_auto_rank_from_lines <- function(lines_df) {
+  max(1L, nrow(as.data.frame(lines_df)))
+}
+
+esprit_grid_multiplier_for_method <- function(lines_df, method_name) {
+  if (grepl("^cssa_row_row", method_name)) {
+    return(1L)
+  }
+  esprit_grid_multiplier_from_lines(lines_df)
+}
+
+cssa_auto_rank_for_method <- function(cfg, method_name, line_method = "bresenham") {
+  if (is.null(cfg) || is.null(cfg$lines)) {
+    return(1L)
+  }
+
+  if (grepl("^cssa_col_row", method_name)) {
+    return(cssa_colrow_safe_rank_from_lines(cfg$lines, cfg$n_row, cfg$n_col))
+  }
+  if (grepl("^cssa_row_row", method_name)) {
+    return(cssa_rowrow_auto_rank_from_lines(cfg$lines))
+  }
+  cssa_rowrow_auto_rank_from_lines(cfg$lines)
+}
+
+cssa_rank_limit_for_config <- function(cfg, method_name) {
+  if (is.null(cfg)) {
+    return(1L)
+  }
+  n_row <- as.integer(cfg$n_row %||% 1L)[1L]
+  n_col <- as.integer(cfg$n_col %||% 1L)[1L]
+  if (grepl("^cssa_col_row|^cssa_col_col", method_name)) {
+    return(cssa_component_limit(n_row))
+  }
+  if (grepl("^cssa_row_row|^cssa_row_col", method_name)) {
+    return(cssa_component_limit(n_col))
+  }
+  max(cssa_component_limit(n_row), cssa_component_limit(n_col))
+}
+
+cssa_auto_rank_pair <- function(cfg, line_method = "bresenham") {
+  if (is.null(cfg) || is.null(cfg$lines)) {
+    return(c(row_row = 1L, col_row = 1L))
+  }
+  c(
+    row_row = min(cssa_rowrow_auto_rank_from_lines(cfg$lines), cssa_component_limit(cfg$n_col)),
+    col_row = min(cssa_colrow_safe_rank_from_lines(cfg$lines, cfg$n_row, cfg$n_col), cssa_component_limit(cfg$n_row))
+  )
+}
+
+parse_cssa_rank_pair <- function(cssa_components) {
+  if (is.null(cssa_components) || length(cssa_components) == 0L) {
+    return(c(row_row = NA_integer_, col_row = NA_integer_))
+  }
+
+  text <- paste(as.character(cssa_components), collapse = ",")
+  parts <- unlist(strsplit(text, "[,;[:space:]]+", perl = TRUE))
+  parts <- parts[nzchar(parts)]
+  values <- suppressWarnings(as.integer(parts))
+  values <- values[is.finite(values) & !is.na(values) & values >= 1L]
+  if (length(values) == 0L) {
+    return(c(row_row = NA_integer_, col_row = NA_integer_))
+  }
+  if (length(values) == 1L) {
+    values <- rep(values, 2L)
+  }
+  c(row_row = values[[1L]], col_row = values[[2L]])
+}
+
+resolve_cssa_components <- function(cssa_components, cfg, method_name, line_method = "bresenham") {
+  auto <- cssa_auto_rank_for_method(cfg, method_name, line_method = line_method)
+  limit <- cssa_rank_limit_for_config(cfg, method_name)
+  auto <- min(auto, limit)
+  manual_pair <- parse_cssa_rank_pair(cssa_components)
+  manual <- if (grepl("^cssa_col_row", method_name)) {
+    manual_pair[["col_row"]]
+  } else if (grepl("^cssa_row_row", method_name)) {
+    manual_pair[["row_row"]]
+  } else {
+    manual_pair[["row_row"]]
+  }
+
+  if (!is.finite(manual) || is.na(manual) || manual < 1L) {
+    return(list(value = auto, source = "auto", auto = auto))
+  }
+  value <- min(max(1L, manual), limit)
+  source <- if (value < manual) "manual_clamped" else "manual"
+  list(value = value, source = source, auto = auto)
+}
+
 custom_config_id <- function(lines_df) {
   paste(line_config_ids(lines_df), collapse = "; ")
 }
@@ -674,11 +1013,11 @@ standard_single_configs <- function(n_row, n_col) {
       n_row = n_row,
       n_col = n_col,
       lines = defs[i, c("a", "b")],
-      intensity = 1
+      intensity = 0.8
     )
   }) |>
     lapply(function(cfg) {
-      cfg$lines$intensity <- 1
+      cfg$lines$intensity <- 0.8
       cfg
     })
 }
@@ -769,7 +1108,11 @@ threshold_processed_matrix <- function(
   }
 
   if (threshold_mode == "manual") {
-    thr <- as.numeric(threshold_value)
+    thr <- suppressWarnings(as.numeric(threshold_value)[1L])
+    if (!is.finite(thr) || is.na(thr)) {
+      thr <- 0
+    }
+    thr <- max(0, thr)
     out <- processed_matrix
     out[out < thr] <- 0
     return(list(
@@ -799,7 +1142,15 @@ threshold_processed_matrix <- function(
     rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = cssa_components, method = "row.row")
     residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
   }
-  thr <- as.numeric(threshold_multiplier) * residual_sd
+  threshold_multiplier <- suppressWarnings(as.numeric(threshold_multiplier)[1L])
+  if (!is.finite(threshold_multiplier) || is.na(threshold_multiplier)) {
+    threshold_multiplier <- 1
+  }
+  threshold_multiplier <- max(0, threshold_multiplier)
+  if (!is.finite(residual_sd) || is.na(residual_sd)) {
+    residual_sd <- 0
+  }
+  thr <- threshold_multiplier * residual_sd
   out <- processed_matrix
   out[out < thr] <- 0
   list(
@@ -893,30 +1244,33 @@ run_ht_repetition_app <- function(
 ) {
   set.seed(seed)
   num_of_lines <- nrow(cfg$lines)
-  if (is.null(cssa_components)) {
-    cssa_components <- num_of_lines
-  }
-  cssa_components <- max(1L, as.integer(cssa_components)[1L])
-  detectors <- available_detectors(
-    num_of_lines = num_of_lines,
-    max_row_k = max_row_k,
-    cssa_components = cssa_components
-  )
   base_matrix <- config_to_matrix(cfg, line_method = line_method)
   true_line <- config_true_params(cfg)
   noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
   threshold_enabled <- !identical(threshold_mode, "none") && length(threshold_method_names) > 0L
   residual_sd <- NULL
   if (threshold_enabled && identical(threshold_mode, "auto_rowrow_sd")) {
-    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = cssa_components, method = "row.row")
+    residual_rank <- resolve_cssa_components(cssa_components, cfg, "cssa_row_row", line_method = line_method)
+    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = residual_rank$value, method = "row.row")
     residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
   }
 
   weighted <- identical(ht_type, "weighted")
-  line_ids <- line_config_ids(cfg$lines)
+  line_ids <- line_display_ids(cfg$lines)
   rows <- vector("list", length(method_names))
   for (method_i in seq_along(method_names)) {
     method_name <- method_names[[method_i]]
+    rank_info <- resolve_cssa_components(cssa_components, cfg, method_name, line_method = line_method)
+    method_frequency_grid_multiplier <- esprit_grid_multiplier_for_method(cfg$lines, method_name)
+    detectors <- available_detectors(
+      num_of_lines = num_of_lines,
+      max_row_k = max_row_k,
+      cssa_components = rank_info$value,
+      esprit_components = rank_info$value,
+      frequency_grid_multiplier = method_frequency_grid_multiplier,
+      cfg = cfg,
+      line_method = line_method
+    )
     processed_matrix <- detectors[[method_name]](noisy_matrix, sigma_noise = sigma_noise)
     cur_threshold_mode <- if (method_name %in% threshold_method_names) threshold_mode else "none"
     threshold_info <- threshold_processed_matrix(
@@ -928,7 +1282,7 @@ run_ht_repetition_app <- function(
       threshold_quantile_p = threshold_quantile_p,
       threshold_multiplier = threshold_multiplier,
       residual_sd = residual_sd,
-      cssa_components = cssa_components
+      cssa_components = rank_info$value
     )
 
     ht_result <- make_accumulator_generic(
@@ -957,7 +1311,10 @@ run_ht_repetition_app <- function(
       line_index = err_by_line$line_index,
       pred_index = err_by_line$pred_index,
       num_lines = num_of_lines,
-      cssa_components = cssa_components,
+      cssa_components = rank_info$value,
+      cssa_rank_source = rank_info$source,
+      cssa_auto_rank = rank_info$auto,
+      frequency_grid_multiplier = method_frequency_grid_multiplier,
       n_col = cfg$n_col,
       n_row = cfg$n_row,
       sigma = sigma_noise,
@@ -999,11 +1356,9 @@ run_ht_experiment_app <- function(
   cssa_components = num_of_lines,
   line_method = "bresenham"
 ) {
-  cssa_components <- max(1L, as.integer(cssa_components)[1L])
   detectors <- available_detectors(
     num_of_lines = num_of_lines,
-    max_row_k = max_row_k,
-    cssa_components = cssa_components
+    max_row_k = max_row_k
   )
   method_names <- intersect(method_names, names(detectors))
   if (length(method_names) == 0L) {
@@ -1093,6 +1448,9 @@ summarise_ht_errors_app <- function(ht_error_samples) {
       line_index = dplyr::first(line_index),
       num_lines = dplyr::first(num_lines),
       cssa_components = dplyr::first(cssa_components),
+      cssa_rank_source = dplyr::first(cssa_rank_source),
+      cssa_auto_rank = dplyr::first(cssa_auto_rank),
+      frequency_grid_multiplier = dplyr::first(frequency_grid_multiplier),
       mean_dr = mean(dr),
       median_dr = median(dr),
       mean_dtheta = mean(dtheta),
@@ -1149,7 +1507,7 @@ ideal_discretization_table_app <- function(config_list, rho_step_ht, theta_step_
     pred_line[, "theta"] <- pmin(pmax(pred_line[, "theta"], 0), pi)
 
     err_by_line <- compute_err_by_line(true_line, pred_line)
-    line_ids <- line_config_ids(cfg$lines)
+    line_ids <- line_display_ids(cfg$lines)
 
     data.frame(
       config_id = line_ids[err_by_line$line_index],
@@ -1192,22 +1550,28 @@ find_big_error_rep_app <- function(
   line_method = "bresenham"
 ) {
   set.seed(seed)
-  cssa_components <- max(1L, as.integer(cssa_components)[1L])
-  detectors <- available_detectors(
-    num_of_lines = num_of_lines,
-    max_row_k = max_row_k,
-    cssa_components = cssa_components
-  )
   base_matrix <- config_to_matrix(cfg, line_method = line_method)
   true_line <- config_true_params(cfg)
   weighted <- identical(ht_type, "weighted")
 
   noisy_matrix <- add.noise(base_matrix, sigma = sigma_noise)
+  rank_info <- resolve_cssa_components(cssa_components, cfg, method_name, line_method = line_method)
   residual_sd <- NULL
   if (identical(threshold_mode, "auto_rowrow_sd")) {
-    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = cssa_components, method = "row.row")
+    residual_rank <- resolve_cssa_components(cssa_components, cfg, "cssa_row_row", line_method = line_method)
+    rowrow_signal <- cssa_denoise(noisy_matrix, num_of_lines = residual_rank$value, method = "row.row")
     residual_sd <- stats::sd(as.vector(noisy_matrix - rowrow_signal), na.rm = TRUE)
   }
+  frequency_grid_multiplier <- esprit_grid_multiplier_for_method(cfg$lines, method_name)
+  detectors <- available_detectors(
+    num_of_lines = num_of_lines,
+    max_row_k = max_row_k,
+    cssa_components = rank_info$value,
+    esprit_components = rank_info$value,
+    frequency_grid_multiplier = frequency_grid_multiplier,
+    cfg = cfg,
+    line_method = line_method
+  )
   processed_matrix <- detectors[[method_name]](noisy_matrix, sigma_noise = sigma_noise)
   threshold_info <- threshold_processed_matrix(
     processed_matrix = processed_matrix,
@@ -1218,7 +1582,7 @@ find_big_error_rep_app <- function(
     threshold_quantile_p = threshold_quantile_p,
     threshold_multiplier = threshold_multiplier,
     residual_sd = residual_sd,
-    cssa_components = cssa_components
+    cssa_components = rank_info$value
   )
 
   ht_result <- make_accumulator_generic(
@@ -1237,8 +1601,12 @@ find_big_error_rep_app <- function(
     window = 6L
   )
 
-  pred_line <- pred_line_all[seq_len(num_of_lines), , drop = FALSE]
-  err <- compute_err(true_line, pred_line)
+  err <- compute_err_with_missing(
+    true_line,
+    pred_line_all,
+    rho_step_ht = rho_step_ht,
+    theta_step_ht = theta_step_ht
+  )
   dr_ratio <- as.numeric(err["dr"]) / max(as.numeric(ideal$dr), 1e-12)
   dtheta_ratio <- as.numeric(err["dtheta"]) / max(as.numeric(ideal$dtheta), 1e-12)
 
@@ -1253,12 +1621,17 @@ find_big_error_rep_app <- function(
     dtheta = as.numeric(err["dtheta"]),
     dr_ratio = dr_ratio,
     dtheta_ratio = dtheta_ratio,
-    cssa_components = cssa_components,
+    num_maxima = num_maxima,
+    detected_lines = nrow(pred_line_all),
+    cssa_components = rank_info$value,
+    cssa_rank_source = rank_info$source,
+    cssa_auto_rank = rank_info$auto,
+    frequency_grid_multiplier = frequency_grid_multiplier,
     threshold_value = threshold_info$threshold_value,
     noisy_matrix = noisy_matrix,
     processed_matrix = threshold_info$processed,
     ht_result = ht_result,
-    pred_line = pred_line,
+    pred_line = pred_line_all,
     pred_line_all = pred_line_all,
     true_line = true_line
   )
@@ -1286,17 +1659,19 @@ find_big_error_cases <- function(
   cssa_components = num_of_lines,
   line_method = "bresenham"
 ) {
-  cssa_components <- max(1L, as.integer(cssa_components)[1L])
   detectors <- available_detectors(
     num_of_lines = num_of_lines,
-    max_row_k = max_row_k,
-    cssa_components = cssa_components
+    max_row_k = max_row_k
   )
   if (!method_name %in% names(detectors)) {
     stop("Метод ", method_name, " недоступен.")
   }
 
-  num_maxima <- max(as.integer(num_maxima), as.integer(num_of_lines), 1L)
+  num_maxima <- suppressWarnings(as.integer(num_maxima)[1L])
+  if (!is.finite(num_maxima) || is.na(num_maxima)) {
+    num_maxima <- 1L
+  }
+  num_maxima <- max(num_maxima, 1L)
   base_matrix <- config_to_matrix(cfg, line_method = line_method)
   true_line <- config_true_params(cfg)
   ideal <- ideal_discretization_error(true_line, rho_step_ht, theta_step_ht)

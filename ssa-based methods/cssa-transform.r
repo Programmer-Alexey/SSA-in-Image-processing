@@ -154,8 +154,11 @@ length.fun <- function(V) {
 # If from.0.to.1 = TRUE, all values less than 0, replaced by 0,
 # all values greater than 1, are replaced by 1
 
-plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){
+plot.matrix <- function(m, from.0.to.1 = FALSE, heatmap = "none", labels = NULL, nplots = NULL){
   rgb.palette <- colorRampPalette(c("white", "black"), space = "rgb")
+  sign.palette <- colorRampPalette(c("blue", "white", "black"), space = "rgb")
+  diverging.palette <- colorRampPalette(c("navy", "white", "firebrick"), space = "rgb")
+  accumulator.palette <- colorRampPalette(c("white", "yellow", "red"), space = "rgb")
 
   as_plot_matrix <- function(x) {
     if (is.null(x)) {
@@ -165,25 +168,109 @@ plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){
     if (is.complex(x)) x <- Re(x)
     x
   }
+
+  normalize_heatmap <- function(value) {
+    if (is.logical(value)) {
+      return(if (isTRUE(value)) "yellow_red" else "none")
+    }
+    if (is.null(value)) {
+      return("none")
+    }
+    value <- as.character(value)[1L]
+    aliases <- c(
+      "false" = "none",
+      "no" = "none",
+      "none" = "none",
+      "blue-black" = "blue_black",
+      "blue_black" = "blue_black",
+      "blue.red" = "blue_red",
+      "blue-red" = "blue_red",
+      "blue_red" = "blue_red",
+      "yellow.red" = "yellow_red",
+      "yellow-red" = "yellow_red",
+      "yellow_red" = "yellow_red",
+      "accumulator" = "yellow_red",
+      "true" = "yellow_red"
+    )
+    key <- tolower(value)
+    if (!key %in% names(aliases)) {
+      stop("Unknown heatmap mode: ", value)
+    }
+    aliases[[key]]
+  }
+
+  heatmap_mode <- normalize_heatmap(heatmap)
+
+  make_levelplot <- function(mat, main = NULL) {
+    if (from.0.to.1) {
+      mat[mat < 0] <- 0
+      mat[mat > 1] <- 1
+    }
+
+    if (heatmap_mode == "none") {
+      return(levelplot(mat, xlab="", ylab="",
+                       col.regions=rgb.palette,
+                       scales=list(draw=FALSE), auto.key=FALSE,
+                       at = if(from.0.to.1) seq(0,1,0.01) else NULL,
+                       main = main,
+                       colorkey=FALSE,
+                       col="transparent", border=NA, cuts=255))
+    }
+
+    finite_values <- mat[is.finite(mat)]
+    if (length(finite_values) == 0L) {
+      finite_values <- 0
+      mat[] <- 0
+    }
+    mat[!is.finite(mat)] <- 0
+
+    if (heatmap_mode == "blue_red") {
+      value_range <- range(finite_values)
+      if (value_range[1L] == value_range[2L]) {
+        value_range <- value_range + c(-0.5, 0.5)
+      }
+      return(levelplot(mat, xlab="", ylab="",
+                       col.regions=diverging.palette,
+                       scales=list(draw=FALSE), auto.key=FALSE,
+                       at=seq(value_range[1L], value_range[2L], length.out=257),
+                       main = main,
+                       colorkey=FALSE,
+                       col="transparent", border=NA, cuts=255))
+    }
+
+    if (heatmap_mode == "yellow_red") {
+      mat <- pmax(mat, 0)
+      value_max <- max(mat[is.finite(mat)])
+      if (!is.finite(value_max) || value_max == 0) {
+        value_max <- 1
+      }
+      return(levelplot(mat, xlab="", ylab="",
+                       col.regions=accumulator.palette,
+                       scales=list(draw=FALSE), auto.key=FALSE,
+                       at=seq(0, value_max, length.out=257),
+                       main = main,
+                       colorkey=FALSE,
+                       col="transparent", border=NA, cuts=255))
+    }
+
+    max_abs <- if (from.0.to.1) 1 else max(abs(finite_values))
+    if (!is.finite(max_abs) || max_abs == 0) {
+      max_abs <- 1
+    }
+
+    levelplot(mat, xlab="", ylab="",
+              col.regions=sign.palette,
+              scales=list(draw=FALSE), auto.key=FALSE,
+              at=seq(-max_abs, max_abs, length.out=257),
+              main = main,
+              colorkey=FALSE,
+              col="transparent", border=NA, cuts=255)
+  }
   
   # РѕРґРёРЅРѕС‡РЅР°СЏ РјР°С‚СЂРёС†Р°
   if (!is.list(m)) {
     m <- t(as_plot_matrix(m))
-    if (!from.0.to.1){
-      return(levelplot(m, xlab="", ylab="", 
-                       col.regions=rgb.palette,
-                       scales=list(draw=FALSE), auto.key=FALSE, 
-                       colorkey=FALSE,
-                       col="transparent", border=NA, cuts=255))
-    } else {
-      m[m < 0] <- 0
-      m[m > 1] <- 1
-      return(levelplot(m, xlab="", ylab="", 
-                       col.regions=rgb.palette,
-                       scales=list(draw=FALSE), auto.key=FALSE, 
-                       at=seq(0,1,0.01), colorkey=FALSE,
-                       col="transparent", border=NA, cuts=255))
-    }
+    return(make_levelplot(m))
   }
   
   # СЃРїРёСЃРѕРє РјР°С‚СЂРёС†
@@ -197,18 +284,7 @@ plot.matrix <- function(m, from.0.to.1 = FALSE, labels = NULL, nplots = NULL){
       stop("Cannot plot NULL matrix in list item: ", item_name)
     }
     mat <- t(as_plot_matrix(m[[i]]))
-    if (from.0.to.1) {
-      mat[mat < 0] <- 0
-      mat[mat > 1] <- 1
-    }
-    
-    p <- levelplot(mat, xlab="", ylab="", 
-                   col.regions=rgb.palette,
-                   scales=list(draw=FALSE), auto.key=FALSE,
-                   at = if(from.0.to.1) seq(0,1,0.01) else NULL,
-                   main = if(!is.null(labels)) labels[i] else " ",
-                   colorkey=FALSE,
-                   col="transparent", border=NA, cuts=255)
+    p <- make_levelplot(mat, main = if(!is.null(labels)) labels[i] else " ")
     plots[[i]] <- p
   }
   

@@ -1,5 +1,21 @@
 ```{r, include=FALSE}
-if (!exists("cssa_esprit_setup_loaded", inherits = FALSE)) {
+is_hough_cpp_loaded <- function() {
+  if (!exists("make_accumulator", inherits = TRUE)) {
+    return(FALSE)
+  }
+  probe <- try(
+    make_accumulator(
+      matrix(0, nrow = 2, ncol = 2),
+      detector = function(x) x,
+      rho_step = 1,
+      theta_step = 0.1
+    ),
+    silent = TRUE
+  )
+  !inherits(probe, "try-error")
+}
+
+if (!exists("cssa_esprit_setup_loaded", inherits = FALSE) || !is_hough_cpp_loaded()) {
 find_project_root <- function() {
   start <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
   current <- start
