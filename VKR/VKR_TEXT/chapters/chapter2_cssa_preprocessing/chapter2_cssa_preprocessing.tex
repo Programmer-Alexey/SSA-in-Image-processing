@@ -1,0 +1,1443 @@
+﻿% !TeX root = Report.tex
+\chapter{Использование CSSA для предобработки изображений}
+
+В данной главе мы приводим теоретическое обоснование методов на основе CSSA,
+описанных в предыдущей главе. Сначала рассматривается вариант
+\texttt{ROW.ROW}: показывается, как строка изображения после DFT сводится к
+комплексно-экспоненциальному временному ряду, и объясняется точное восстановление в этой модели.
+Затем рассматривается вариант \texttt{COL.ROW}, для которого существенную роль играет
+ранг траекторной матрицы, построенной по столбцам комплексной матрицы. Отдельно
+мы обсуждаем эффекты, возникающие после обратного преобразования Фурье, а также
+два способа их уменьшения: ESPRIT и пороговую фильтрацию восстановленного
+изображения.
+
+
+\section{Теория \texorpdfstring{\texttt{CSSA ROW.ROW}}{CSSA ROW.ROW}}
+
+Приведем несколько утверждений про математическую модель алгоритма. Пусть
+$p$-я строка изображения содержит один пиксель сигнала в столбце $j_p$ с
+интенсивностью $c_p>0$. Тогда соответствующий одномерный ряд имеет вид
+\[
+\mathbf{x}^{(p)} = c_p \mathbf{e}_{j_p} + \boldsymbol{\varepsilon}^{(p)},
+\]
+где $\mathbf{e}_{j_p}$ --- единичный орт длины $N_{\mathrm{col}}$,
+а $\boldsymbol{\varepsilon}^{(p)}$ --- шумовая компонента. Для сигнала
+после дискретного преобразования Фурье получаем
+\begin{equation}
+\mathcal{F}\bigl(c_p\mathbf{e}_{j_p}\bigr)
+=
+c_p \boldsymbol{\varphi}_{j_p},
+\qquad
+\bigl(\boldsymbol{\varphi}_{j_p}\bigr)_k
+=
+\exp\!\left(
+-\frac{2\pi\mathrm{i}}{N_{\mathrm{col}}}(j_p-1)(k-1)
+\right),
+\quad k=1,\dots,N_{\mathrm{col}}.
+    \label{eq:one-pixel-dft-exponential}
+\end{equation}
+Таким образом, строка с одним пикселем сигнала после DFT задается
+одной комплексной экспонентой. Именно это является теоретическим основанием
+для сохранения одной компоненты CSSA в варианте \texttt{ROW.ROW}.
+
+\begin{statement}
+Пусть задан комплексный ряд
+\[
+z_k = c\mu^{k-1}, \qquad k=1,\dots,N,
+\]
+где $c \ne0$, $\mu\in\mathbb{C}$, $\mu\ne0$. Пусть $1<L<N$ и
+$K=N-L+1$. Тогда траекторная матрица
+\[
+\mathcal{H}_L(z)
+=
+\{z_{p+\ell-1}\}_{p=1,\ell=1}^{L,K}
+\]
+имеет ранг $1$.
+\end{statement}
+
+\begin{proof}
+Элемент траекторной матрицы равен
+\[
+z_{p+\ell-1}=c\mu^{p+\ell-2}
+=
+c\mu^{p-1}\mu^{\ell-1}.
+\]
+Следовательно,
+\[
+\mathcal{H}_L(z)=uv^{\top},
+\qquad
+u_p=c\mu^{p-1},\quad v_\ell=\mu^{\ell-1}.
+\]
+В силу того, что
+$\rank(\mathcal{H}_L(z)) \le \min(\rank(u), \rank(v)) = 1$ и
+$\mathcal{H}_L(z)\ne0$, получаем $\rank(\mathcal{H}_L(z))=1$.
+\end{proof}
+
+\begin{corollary}
+Для любого положения пикселя $j\in\{1,\dots,N_{\mathrm{col}}\}$ чистая строка
+$c\mathbf{e}_j$, $c\ne0$, точно восстанавливается методом
+\texttt{CSSA ROW.ROW} при сохранении одной ненулевой компоненты.
+\end{corollary}
+
+\begin{proof}
+По формуле \eqref{eq:one-pixel-dft-exponential} после DFT строка
+$c\mathbf{e}_j$ переходит в комплексную экспоненту.
+В предыдущем утверждении достаточно взять
+\[
+\mu=\exp\!\left(
+-\frac{2\pi\mathrm{i}}{N_{\mathrm{col}}}(j-1)
+\right).
+\]
+Значит, траекторная матрица этого ряда имеет ранг $1$. Поэтому
+Реконструкция после CSSA по единственной ненулевой компоненте восстанавливает ряд
+$z$ точно, а обратное DFT возвращает исходную строку $c\mathbf{e}_j$.
+\end{proof}
+
+\begin{remark}
+Если в строке находится несколько пикселей сигнала,
+\[
+\mathbf{x}^{(p)}
+=
+\sum_{\ell=1}^{q_p} c_{p\ell}\mathbf{e}_{j_{p\ell}},
+\]
+то, в силу линейности DFT, компонента сигнала становится суммой $q_p$
+комплексных экспонент:
+\[
+\mathcal{F}\bigl(\mathbf{x}^{(p)}\bigr)
+=
+\sum_{\ell=1}^{q_p} c_{p\ell}\boldsymbol{\varphi}_{j_{p\ell}}.
+\]
+Поэтому ранг траекторной матрицы такого ряда не превосходит $q_p$.
+\end{remark}
+
+Итак, после DFT строка с одним пикселем сигнала имеет вид
+\[
+F\mathbf{x}^{(p)}
+=
+c_p\boldsymbol{\varphi}_{j_p}
++
+\widetilde{\boldsymbol{\varepsilon}}^{(p)}.
+\]
+Компонента сигнала имеет ранг $1$, а шумовая компонента, вообще говоря, не имеет
+малого ранга. CSSA работает как приближение: предполагается, что компоненте
+сигнала соответствует одна из собственных троек траекторной матрицы с
+максимальным сингулярным значением.
+
+При типичной обработке одной прямой основная геометрическая структура сохраняется,
+но после восстановления остаются слабые остаточные значения.
+
+\begin{figure}[H]
+	\centering
+	\begin{subfigure}{0.49\textwidth}
+		\centering
+        \includegraphics[width=\textwidth]{singular-values-02.png}
+		\caption{$\sigma=0.2$}
+	\end{subfigure}
+	\hfill
+	\begin{subfigure}{0.49\textwidth}
+		\centering
+        \includegraphics[width=\textwidth]{singular-values-005.png}
+		\caption{$\sigma=0.05$}
+	\end{subfigure}
+	\caption{Первые сингулярные значения для чистой и зашумленной строки после DFT}
+	\label{fig:one-row-singular-values}
+\end{figure}
+
+Рис.~\ref{fig:one-row-singular-values} иллюстрирует, как шум нарушает точную
+одноранговую структуру ряда. В чистом случае ненулевой остается только одна
+компонента. При $\sigma=0.2$ шум растягивает сингулярный спектр, и
+компонента сигнала может перестать быть первой. При меньшем шуме доминирование
+первой компоненты выражено сильнее.
+
+Наличие шума может приводить к смещению максимума: индекс наибольшего значения
+в восстановленной строке не всегда совпадает с положением истинного пикселя.
+Этот эффект связан с ошибкой выделения сигнальной компоненты на фоне шума, поэтому
+при меньшем уровне шума он должен проявляться слабее. На рис.~\ref{fig:shift-profiles}
+показаны две реконструкции для одного и того же положения сигнального пикселя:
+при $\sigma=0.2$ максимум смещается, а при $\sigma=0.05$ основная масса
+восстановленного сигнала концентрируется ближе к истинному индексу.
+
+\begin{figure}[H]
+	\centering
+	\begin{subfigure}{0.49\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{shift_profiling.png}
+		\caption{$\sigma=0.2$}
+	\end{subfigure}
+	\hfill
+	\begin{subfigure}{0.49\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{shift_profiling_sigma_005.png}
+		\caption{$\sigma=0.05$}
+	\end{subfigure}
+	\caption{График восстановленной строки при смещении максимума}
+	\label{fig:shift-profiles}
+\end{figure}
+
+Другой характерный дефект --- растекание. Оно означает, что после обратного DFT
+восстановленная строка имеет максимум в том же индексе, что и исходная, но
+может содержать несколько соседних пикселей вместо одного с интенсивностью
+$c_p$. Уменьшение уровня шума
+частично ослабляет этот эффект, однако для дополнительного контроля растекания
+можно использовать параметрическое восстановление на основе ESPRIT.
+Пример такой реконструкции показан на рис.~\ref{fig:smear-profile}.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.78\textwidth]{smear_profiling.png}
+	\caption{График восстановленной строки при растекании сигнала}
+	\label{fig:smear-profile}
+\end{figure}
+
+\subsection{ESPRIT как дополнение к \texorpdfstring{\texttt{CSSA ROW.ROW}}{CSSA ROW.ROW}}
+
+Пусть $P_r$ --- это матрица, составленная из левых сингулярных векторов,
+полученных в результате работы CSSA.
+В идеальном случае, когда ряд является суммой $r$ комплексных экспонент,
+его траекторная матрица имеет ранг $r$, а её столбцовое пространство
+совпадает с пространством, порожденным векторами из комплексных экспонент:
+\[
+u(\mu_\ell)
+=
+\begin{pmatrix}
+1 & \mu_\ell & \mu_\ell^2 & \cdots & \mu_\ell^{L-1}
+\end{pmatrix}^{\top},
+\qquad \ell=1,\dots,r,
+\]
+где $\mu_\ell=\exp(-2\pi\ii\omega_\ell)$. Иными словами,
+\[
+\operatorname{span}(P_r)
+=
+\operatorname{span}\{u(\mu_1),\dots,u(\mu_r)\}.
+\]
+Обозначим через $\underline P_r$ матрицу, полученную из $P_r$ удалением
+последней строки, а через $\overline P_r$ --- матрицу, полученную из $P_r$
+удалением первой строки.
+Тогда
+\[
+\underline P_r,\overline P_r\in\mathbb C^{(L-1)\times r}.
+\]
+Если бы CSSA восстановил сигнал идеально, то полученная матрица имела бы вид
+\[
+P=
+\begin{pmatrix}
+1 & \cdots & 1\\
+\mu_1 & \cdots & \mu_r\\
+\vdots & \ddots & \vdots\\
+\mu_1^{L-1} & \cdots & \mu_r^{L-1}
+\end{pmatrix}\in\mathbb C^{L\times r},
+\]
+где
+\[
+\mu_j=\exp\!\left(-2\pi\ii\omega_j\right),\qquad j=1,\dots,r.
+\]
+и ее подматрицы $\underline P$ и $\overline P$, определенные аналогично
+$\underline P_r$ и $\overline P_r$:
+\[
+\underline P=
+\begin{pmatrix}
+1 & \cdots & 1\\
+\mu_1 & \cdots & \mu_r\\
+\vdots & \ddots & \vdots\\
+\mu_1^{L-2} & \cdots & \mu_r^{L-2}
+\end{pmatrix},
+\qquad
+\overline P=
+\begin{pmatrix}
+\mu_1 & \cdots & \mu_r\\
+\mu_1^2 & \cdots & \mu_r^2\\
+\vdots & \ddots & \vdots\\
+\mu_1^{L-1} & \cdots & \mu_r^{L-1}
+\end{pmatrix}.
+\]
+Тогда выполняется точное соотношение
+\[
+\overline P=\underline P D,
+\qquad
+D=\operatorname{diag}(\mu_1,\dots,\mu_r).
+\]
+Для $P_r$ равенство, вообще говоря, нарушается из-за шума,
+поэтому матрица перехода определяется как решение задачи минимизации нормы:
+\[
+\widehat M
+=
+\arg\min_{M\in\mathbb C^{r\times r}}
+\|\overline P_r-\underline P_r M\|_F.
+\]
+Здесь $\|A\|_F$ --- норма Фробениуса матрицы $A$:
+\[
+\|A\|_F=\sqrt{\sum_{i,j}|a_{ij}|^2}.
+\]
+Если $\underline P_r$ имеет полный столбцовый ранг, то
+\[
+\widehat M=\underline P_r^\dagger\overline P_r,
+\]
+где $\underline P_r^\dagger$ обозначает псевдообратную матрицу
+Мура--Пенроуза. В данном случае
+$$\underline P_r^\dagger=(\underline P_r^{*}\underline P_r)^{-1}\underline P_r^{*}.$$
+Далее используются собственные значения полученной матрицы $\widehat M$:
+по ним восстанавливаются оценки модуля $\widehat\rho_i$ и частоты $\widehat\omega_i$ исходных экспонент.
+Это приводит к следующему алгоритму.
+
+\begin{algorithm}[H]
+	\caption{ESPRIT}
+	\begin{algorithmic}[1]
+		\Require матрица $P_r\in\mathbb C^{L\times r}$
+        \Ensure оценки параметров $(\widehat\rho_i,\widehat\omega_i)$, $i=1,\dots,r$
+		\State построить матрицы $\underline P_r$ и $\overline P_r$
+        \State найти матрицу $\widehat M\in\mathbb C^{r\times r}$ из соотношения
+		\[
+        \widehat M=\underline P_r^\dagger\overline P_r
+		\]
+        \State найти собственные значения $\widehat\mu_1,\dots,\widehat\mu_r$ матрицы $\widehat M$
+		\State положить
+		\[
+        \widehat\rho_i=|\widehat\mu_i|,
+		\qquad
+        \widehat\omega_i=\operatorname{Arg}(\widehat\mu_i),
+		\qquad i=1,\dots,r
+		\]
+        \State \Return $(\widehat\rho_i,\widehat\omega_i)$, $i=1,\dots,r$
+	\end{algorithmic}
+\end{algorithm}
+После оценки параметров используется проекция оцененного на этапе CSSA сигнала на подпространство, порожденное
+векторами
+\[
+u\bigl(\exp(-2\pi\ii\widehat\omega_\ell)\bigr),
+\qquad \ell=1,\dots,r.
+\]
+Однако, не всякая комплексная экспонента при обратном DFT переходит в единичный орт.
+\begin{statement}
+Пусть $c\ne0, 0 \le \omega < 1$ и
+\[
+\widehat z_k
+=
+c\exp\!\left(-2\pi\ii\omega(k-1)\right),
+\qquad
+k=1,\dots, N_{\mathrm{col}}.
+\]
+Тогда
+\[
+\mathcal F^{-1}\widehat z=c\mathbf e_m
+\]
+для некоторого $m\in\{1,\dots,N_{\mathrm{col}}\}$ тогда и только тогда, когда:
+\[
+\omega = \frac{m-1}{N_{\mathrm{col}}}.
+\]
+\end{statement}
+
+\begin{proof}
+Если $\omega=(m-1)/N$, то
+\[
+\begin{aligned}
+\bigl(\mathcal F^{-1}\widehat z\bigr)_j
+&=
+\frac{c}{N}
+\sum_{k=1}^{N}
+\exp\!\left(
+2\pi\ii\left(\frac{j-1}{N_{\mathrm{col}}}-\omega\right)(k-1)
+\right)
+\\
+&=
+\frac{c}{N}
+\sum_{k=1}^{N}
+\exp\!\left(
+2\pi\ii\frac{j-m}{N_{\mathrm{col}}}(k-1)
+\right)
+=
+\begin{cases}
+c, & j=m,\\
+0, & j\ne m.
+\end{cases}
+\end{aligned}
+\]
+Значит, $\mathcal F^{-1}\widehat z=c\mathbf e_m$.
+
+Обратно, пусть $\mathcal F^{-1}\widehat z=c\mathbf e_m$. Применяя DFT к обеим
+частям, получаем
+\[
+c\exp\!\left(-2\pi\ii\omega(k-1)\right)
+=
+c\exp\!\left(
+-2\pi\ii\frac{(m-1)(k-1)}{N_{\mathrm{col}}}
+\right),
+\qquad \forall k=1,\dots,N_{\mathrm{col}}.
+\]
+Так как $c\ne0$, при $k=2$ имеем
+\[
+\exp(-2\pi\ii\omega)
+=
+\exp\!\left(-2\pi\ii\frac{m-1}{N_{\mathrm{col}}}\right),
+\]
+то есть $\omega = (m-1)/N_{\mathrm{col}}$, в силу ограничений на $\omega$.
+\end{proof}
+
+Таким образом, для комплексной экспоненты растекание при обратном DFT
+отсутствует тогда и только тогда, когда частота попадает в сетку шага
+$1/N_{col}$. Как правило, это не так, поэтому после оценивания частоты было
+предложено использовать ближайшее значение из элементов сетки:
+$$
+\widehat\omega_{\text{est}} = \frac{\left\lfloor \widehat\omega N_{\mathrm{col}} + 1/2 \right\rfloor}{N_{\mathrm{col}}}.
+$$
+
+\section{\texorpdfstring{\texttt{CSSA COL.ROW}}{CSSA COL.ROW} и ранг столбцов траекторной матрицы после DFT}
+
+Для начала рассмотрим одну компоненту сигнала без шума. Ее матрицу
+обозначим через $X$ и будем считать, что прямая задается целыми числами $a$ и $b$:
+\begin{equation}
+    X_{r,m}
+    =
+    A\mathbf 1_{\{r=am+b\}},
+    \qquad
+    r=1,\dots,N_{\mathrm{row}},
+    \quad
+    m=1,\dots,N_{\mathrm{col}}.
+    \label{eq:X-definition}
+\end{equation}
+Здесь $a\in\mathbb N$, $b\in\mathbb Z$, $A\ne0$.
+
+Обозначим через $\xi_{r,q}$ элементы матрицы после построчного DFT:
+\begin{equation}
+    \xi_{r,q}
+    =
+    \sum_{m=1}^{N_{\mathrm{col}}}
+    X_{r,m}
+    \exp\left(
+        -2\pi\ii\frac{(m-1)(q-1)}{N_{\mathrm{col}}}
+    \right),
+    \qquad
+    q=1,\dots,N_{\mathrm{col}}.
+    \label{eq:dft-row}
+\end{equation}
+Зафиксируем индекс $q$ и обозначим соответствующий столбец через
+$u$, то есть $u_r=\xi_{r,q}$, $r=1,\dots,N_{\mathrm{row}}$.
+
+Именно к таким рядам $u$ применяется CSSA в варианте \texttt{COL.ROW}. Пусть
+$K=N_{\mathrm{row}}-L+1$. Траекторной матрицей ряда $u$ будем называть
+\begin{equation}
+    \Hankel_L(u)
+    =
+    \{u_{p+\ell-1}\}_{p=1,\ell=1}^{L,K}
+    =
+    \begin{pmatrix}
+        u_1 & u_2 & \cdots & u_K \\
+        u_2 & u_3 & \cdots & u_{K+1} \\
+        \vdots & \vdots & \ddots & \vdots \\
+        u_L & u_{L+1} & \cdots & u_{N_{\mathrm{row}}}
+    \end{pmatrix}
+    \label{eq:trajectory-matrix}
+\end{equation}
+
+\begin{statement}
+\label{st:colrow-main-rank}
+Пусть $X$ задаётся формулой \eqref{eq:X-definition}, а $u$ --- фиксированный
+столбец после построчного DFT \eqref{eq:dft-row}. Предположим, что выполнены условия
+\begin{equation}
+    a+\max(b,0)\le \min(L,K),
+    \qquad
+    K=N_{\mathrm{row}}-L+1,
+    \label{eq:rank-fits-window}
+\end{equation}
+и условие:
+\begin{equation}
+    a(N_{\mathrm{col}}+1)+b>N_{\mathrm{row}}.
+    \label{eq:no-bottom-truncation}
+\end{equation}
+Тогда
+\begin{equation}
+    \rank \Hankel_L(u)
+    =
+    a+\max(b,0).
+    \label{eq:main-rank-formula}
+\end{equation}
+\end{statement}
+
+\begin{proof}
+Положим
+\begin{equation*}
+    \rho_q
+    =
+    \exp\left(
+        -2\pi\ii\frac{q-1}{N_{\mathrm{col}}}
+    \right).
+\end{equation*}
+Тогда
+\begin{equation*}
+    \exp\left(
+        -2\pi\ii\frac{(m-1)(q-1)}{N_{\mathrm{col}}}
+    \right)
+    =
+    \rho_q^{m-1}.
+\end{equation*}
+Поэтому из \eqref{eq:dft-row} получаем
+\begin{equation*}
+    u_r
+    =
+    \xi_{r,q}
+    =
+    \sum_{m=1}^{N_{\mathrm{col}}} X_{r,m}\rho_q^{m-1}.
+\end{equation*}
+Согласно \eqref{eq:X-definition}, матрица $X$ имеет ненулевые элементы только в тех строках, индексы которых имеют вид
+\begin{equation*}
+    r=am+b.
+\end{equation*}
+В этом случае
+\begin{equation*}
+    u_r=A\rho_q^{m-1}.
+\end{equation*}
+Следовательно, элементы столбца $u$ имеют вид
+\begin{equation}
+    u_r
+    =
+    \begin{cases}
+        A\rho_q^{m-1}, & r=am+b,\quad m=1,\dots,N_{\mathrm{col}},\\
+        0, & \text{иначе}.
+    \end{cases}
+    \label{eq:u-structure}
+\end{equation}
+
+Обозначим строки траекторной матрицы \eqref{eq:trajectory-matrix} через
+\begin{equation*}
+    R_1,\dots,R_L,
+\end{equation*}
+где
+\begin{equation*}
+    R_p=(u_p,u_{p+1},\dots,u_{p+K-1}).
+\end{equation*}
+Сначала рассмотрим случай $b\ge0$. Первая ненулевая строка ряда $u$
+соответствует $m=1$. Положим
+\begin{equation*}
+    d=a+b.
+\end{equation*}
+Тогда эта строка имеет номер $d$. Так как $b\ge0$, то $d\ge a$. Первые $d-1$ строк ряда $u$ нулевые, а $d$-я строка ненулевая:
+\begin{equation}
+    u_1=\dots=u_{d-1}=0,
+    \qquad
+    u_d=A.
+    \label{eq:first-nonzero}
+\end{equation}
+Поскольку $d-1=b+(a-1)$, первые $d-1$ нулей можно представить как $b$
+начальных нулей и ещё $a-1$ нулей непосредственно перед первым ненулевым
+элементом. Далее после каждого ненулевого элемента снова идут $a-1$ нулей,
+так как соседние ненулевые строки отличаются на $a$:
+\begin{equation*}
+    u=
+    (\underbrace{0,\dots,0}_{b},
+    \underbrace{0,\dots,0}_{a-1},
+    A,
+    \underbrace{0,\dots,0}_{a-1},
+    A\rho_q,
+    \underbrace{0,\dots,0}_{a-1},
+    A\rho_q^2,
+    \dots).
+\end{equation*}
+
+Сначала докажем нижнюю оценку ранга. Рассмотрим левый верхний блок траекторной матрицы размера $d\times d$:
+\begin{equation*}
+    B
+    =
+    \{u_{p+\ell-1}\}_{p,\ell=1}^{d}
+    =
+    \begin{pmatrix}
+        u_1 & u_2 & \cdots & u_d \\
+        u_2 & u_3 & \cdots & u_{d+1} \\
+        \vdots & \vdots & \ddots & \vdots \\
+        u_d & u_{d+1} & \cdots & u_{2d-1}
+    \end{pmatrix}.
+\end{equation*}
+Заметим, что из тождества (\ref{eq:first-nonzero}) следует, что $B$ имеет вид
+\begin{equation*}
+    B=
+    \begin{pmatrix}
+        0 & 0 & \cdots & 0 & A \\
+        0 & 0 & \cdots & A & * \\
+        0 & 0 & \ddots & * & * \\
+        0 & A & \cdots & * & * \\
+        A & * & \cdots & * & *
+    \end{pmatrix},
+\end{equation*}
+где символ $*$ обозначает элементы, значения которых для данной оценки несущественны.
+
+Переставим столбцы матрицы $B$ в обратном порядке. Получим матрицу
+\begin{equation*}
+    \widetilde B=
+    \begin{pmatrix}
+        A & 0 & 0 & \cdots & 0 \\
+        * & A & 0 & \cdots & 0 \\
+        * & * & A & \cdots & 0 \\
+        \vdots & \vdots & \vdots & \ddots & \vdots \\
+        * & * & * & \cdots & A
+    \end{pmatrix}.
+\end{equation*}
+Эта матрица нижнетреугольная с ненулевой диагональю. Поэтому
+\begin{equation*}
+    \det \widetilde B=A^d\ne0.
+\end{equation*}
+Перестановка столбцов не меняет ранг, значит
+\begin{equation*}
+    \rank B=d.
+\end{equation*}
+Так как $B$ является подматрицей $\Hankel_L(u)$, получаем
+\begin{equation*}
+    \rank \Hankel_L(u)\ge d.
+\end{equation*}
+
+Теперь докажем обратное неравенство. Как видно из \eqref{eq:first-nonzero}, начиная с индекса $b+1$, ряд $u$ удовлетворяет соотношению
+\begin{equation}
+    u_{r+a}=\rho_q u_r,
+    \qquad r\ge b+1.
+    \label{eq:recursion-positive-b}
+\end{equation}
+Действительно, если $u_r\ne0$, то $r=am+b$ для некоторого $m\ge1$, и тогда
+\begin{equation*}
+    r+a=a(m+1)+b,
+\end{equation*}
+откуда
+\begin{equation*}
+    u_{r+a}=A\rho_q^m=\rho_q A\rho_q^{m-1}=\rho_q u_r.
+\end{equation*}
+Если же $u_r=0$, то $r \ne am+b$, то есть $r-b$ не делится на $a$. Поэтому $r+a-b$ также не делится на $a$, и
+\begin{equation*}
+    u_{r+a}=0=\rho_q u_r.
+\end{equation*}
+
+Используем этот факт, чтобы доказать, что строки матрицы $\Hankel_L(u)$ тоже
+удовлетворяют рекуррентному соотношению. Рассмотрим произвольную строку $R_p$,
+лежащую ниже первых $d$ строк траекторной матрицы, то есть пусть $p>d$. Так
+как $d=a+b$, имеем
+\begin{equation*}
+    p-a>b,
+\end{equation*}
+а значит
+\begin{equation*}
+    p-a\ge b+1.
+\end{equation*}
+Для произвольного столбца $\ell=1,\dots,K$ элемент строки $R_{p-a}$ имеет вид $u_{p-a+\ell-1}$. Обозначим его индекс через
+\begin{equation*}
+    r=p-a+\ell-1.
+\end{equation*}
+Тогда $r\ge b+1$, поэтому к нему можно применить рекуррентное соотношение \eqref{eq:recursion-positive-b}:
+\begin{equation*}
+    u_{r+a}=\rho_q u_r.
+\end{equation*}
+Следовательно,
+\begin{equation*}
+    u_{p+\ell-1}
+    =
+    u_{r+a}
+    =
+    \rho_q u_r
+    =
+    \rho_q u_{p-a+\ell-1}.
+\end{equation*}
+Это верно для всех $\ell=1,\dots,K$, следовательно,
+\begin{equation*}
+    R_p=\rho_q R_{p-a},
+    \qquad p>d.
+\end{equation*}
+Значит, каждая строка после $d$-й выражается через более раннюю строку.
+Повторяя это соотношение, получаем, что все строки $R_{d+1},\dots,R_L$
+принадлежат линейной оболочке первых $d$ строк.
+Поэтому
+\begin{equation*}
+    \rank \Hankel_L(u)\le d.
+\end{equation*}
+Из нижней и верхней оценок следует
+\begin{equation}
+    \rank \Hankel_L(u)=d=a+b.
+    \label{eq:rank-positive-b}
+\end{equation}
+
+Пусть теперь $b<0$. Первые значения $m$ могут давать строки $am+b<1$, то есть соответствующие точки находятся выше изображения и не попадают в матрицу $X$.
+
+Пусть $m_0$ --- первый номер столбца, для которого точка попадает в изображение:
+\begin{equation*}
+    m_0=\min\{m\ge1:\ am+b\ge1\}.
+\end{equation*}
+Обозначим соответствующий индекс строки через
+\begin{equation*}
+    r_0=am_0+b.
+\end{equation*}
+Из определения $m_0$ имеем
+\begin{equation*}
+    r_0\ge1,
+    \qquad
+    r_0-a=a(m_0-1)+b<1,
+\end{equation*}
+поэтому
+\begin{equation*}
+    1\le r_0\le a.
+\end{equation*}
+
+Положим
+\begin{equation*}
+    C=A\rho_q^{m_0-1}\ne0.
+\end{equation*}
+Тогда ряд $u$ имеет вид
+\begin{equation}
+    u_r
+    =
+    \begin{cases}
+        C\rho_q^t, & r=r_0+at,\quad t=0,1,2,\dots,\\
+        0, & \text{иначе},
+    \end{cases}
+    \label{eq:u-negative-b-structure}
+\end{equation}
+Иными словами, после верхнего обрезания остаётся та же периодическая структура с шагом $a$, но первый ненулевой элемент находится в строке $r_0\in\{1,\dots,a\}$:
+\begin{equation*}
+    u=
+    (\underbrace{0,\dots,0}_{r_0-1},
+    C,
+    \underbrace{0,\dots,0}_{a-1},
+    C\rho_q,
+    \underbrace{0,\dots,0}_{a-1},
+    C\rho_q^2,
+    \dots).
+\end{equation*}
+
+Из этой структуры следует рекуррентное соотношение
+\begin{equation}
+    u_{r+a}=\rho_q u_r.
+    \label{eq:recursion-negative-b}
+\end{equation}
+для всех допустимых индексов. Поэтому для строк траекторной матрицы
+\begin{equation*}
+    R_{p+a}=\rho_q R_p,
+    \qquad p=1,\dots,L-a.
+\end{equation*}
+Следовательно, все строки после первых $a$ выражаются через первые $a$ строк:
+\begin{equation*}
+    \rank \Hankel_L(u)\le a.
+\end{equation*}
+
+Теперь докажем нижнюю оценку. Рассмотрим левый верхний блок размера $a\times a$:
+\begin{equation*}
+    B
+    =
+    \{u_{p+\ell-1}\}_{p,\ell=1}^{a}
+    =
+    \begin{pmatrix}
+        u_1 & u_2 & \cdots & u_a \\
+        u_2 & u_3 & \cdots & u_{a+1} \\
+        \vdots & \vdots & \ddots & \vdots \\
+        u_a & u_{a+1} & \cdots & u_{2a-1}
+    \end{pmatrix}.
+\end{equation*}
+Напомним, что в ряде $u$ первый ненулевой элемент находится в строке
+$r_0$, где $1\le r_0\le a$, а расстояние между соседними ненулевыми
+элементами равно $a$. Поэтому в любом фрагменте длины $a$ среди индексов
+$1,\dots,2a-1$ находится ровно один ненулевой элемент ряда $u$.
+
+Каждая строка блока $B$ как раз состоит из такого фрагмента:
+\[
+    u_p,\ u_{p+1},\dots,u_{p+a-1},
+    \qquad p=1,\dots,a.
+\]
+Значит, в каждой строке блока $B$ стоит ровно один ненулевой элемент.
+При переходе от строки $p$ к строке $p+1$ этот фрагмент сдвигается на один
+индекс, поэтому положение ненулевого элемента в строке также сдвигается.
+В результате ненулевые элементы попадают в разные столбцы, и в каждом
+столбце блока $B$ тоже находится ровно один ненулевой элемент. Все эти
+элементы имеют вид $C\rho_q^t$ и отличны от нуля, поэтому после перестановки
+столбцов матрица $B$ становится диагональной с ненулевой диагональю. Значит,
+\begin{equation*}
+    \rank B=a.
+\end{equation*}
+Так как $B$ является подматрицей $\Hankel_L(u)$, получаем
+\begin{equation*}
+    \rank \Hankel_L(u)\ge a.
+\end{equation*}
+Из верхней и нижней оценок следует
+\begin{equation}
+    \rank \Hankel_L(u)=a.
+    \label{eq:rank-negative-b}
+\end{equation}
+
+Объединяя \eqref{eq:rank-positive-b} и \eqref{eq:rank-negative-b}, получаем
+\begin{equation}
+    \rank \Hankel_L(u)
+    =
+    \begin{cases}
+        a+b, & b\ge0,\\
+        a, & b<0.
+    \end{cases}
+    \label{eq:piecewise-rank}
+\end{equation}
+Следовательно,
+\begin{equation*}
+    \rank \Hankel_L(u)
+    =
+    \max(a,a+b)
+    =
+    a+\max(b,0).
+\end{equation*}
+\end{proof}
+
+Если условие
+\(
+    a(N_{\mathrm{col}}+1)+b>N_{\mathrm{row}}
+\)
+нарушается, в конце ряда $u$ появляются дополнительные элементы, и точная формула
+\eqref{eq:main-rank-formula} уже не описывает общий случай. Поэтому далее
+используется оценка ранга сверху.
+
+\begin{statement}
+\label{st:colrow-safe-rank-positive}
+Пусть $X$ задаётся формулой \eqref{eq:X-definition} при $a\in\mathbb N$,
+а $u$ --- фиксированный столбец после построчного DFT \eqref{eq:dft-row}.
+Положим
+\[
+    y_1=a+b,
+    \qquad
+    y_N=aN_{\mathrm{col}}+b.
+\]
+Тогда
+\begin{equation}
+    \rank \Hankel_L(u)
+    \le
+    \widehat{R},
+    \label{eq:safe-rank-bound}
+\end{equation}
+где
+\begin{equation}
+    \begin{aligned}
+    \widehat{R}
+    =
+    \min\{&
+        L,\ K,\
+        \max(y_N,0),
+        \max(N_{\mathrm{row}}+1-y_1,0),
+        \\
+        &
+        a+\max(b,0)
+        +
+        \max\left(
+            N_{\mathrm{row}}+1-a(N_{\mathrm{col}}+1)-b,\ 0
+        \right)
+    \}.
+    \end{aligned}
+    \label{eq:y-safe-rank}
+\end{equation}
+\end{statement}
+
+\begin{proof}
+Положим
+\begin{equation*}
+    \rho_q
+    =
+    \exp\left(
+        -2\pi\ii\frac{q-1}{N_{\mathrm{col}}}
+    \right).
+\end{equation*}
+Как и в доказательстве Утверждения~\ref{st:colrow-main-rank}, из
+\eqref{eq:dft-row} получаем
+\begin{equation}
+    u_r
+    =
+    \begin{cases}
+        A\rho_q^{m-1}, & r=am+b,\quad m=1,\dots,N_{\mathrm{col}},\\
+        0, & \text{иначе}.
+    \end{cases}
+    \label{eq:u-structure-safe}
+\end{equation}
+\begin{enumerate}
+    \item Траекторная матрица $\Hankel_L(u)$ имеет размер $L\times K$.
+    Поэтому
+    \begin{equation}
+        \rank\Hankel_L(u)\le \min(L,K).
+        \label{eq:rank-by-size}
+    \end{equation}
+
+    \item Поскольку $a\in\mathbb N$, индексы строк
+    \[
+        y_m=am+b,\qquad m=1,\dots,N_{\mathrm{col}},
+    \]
+    возрастают с ростом $m$. Поэтому $y_1=a+b$ является первым возможным
+    индексом строки, в которой может стоять ненулевой элемент ряда $u$, а
+    $y_N=aN_{\mathrm{col}}+b$ --- последним. Ненулевые элементы ряда $u$
+    могут стоять только в строках
+    \begin{equation*}
+        y_1,\quad y_1+a,\quad \dots,\quad y_N.
+    \end{equation*}
+    С точностью до отсечения границами изображения ряд имеет вид
+    \[
+        u=(0,\dots,0,\ u_{y_1},\ 0,\dots,0,\ u_{y_1+a},\
+        \dots,\ u_{y_N},\ 0,\dots,0),
+    \]
+    где индексы соседних ненулевых элементов отличаются на $a$.
+
+    $p$-я строка траекторной матрицы состоит из элементов
+    $u_p,u_{p+1},\dots,u_{p+K-1}$.
+    Если $y_N<1$, то даже последний возможный ненулевой индекс меньше $1$,
+    поэтому ряд $u$ нулевой. При $y_N\ge1$ из отсутствия ненулевых элементов
+    после индекса $y_N$ следует схематический вид, где
+    $s=\min(L,y_N)$:
+    \[
+        \Hankel_L(u)=
+        \begin{pmatrix}
+            u_1 & u_2 & \cdots & u_K\\
+            \vdots & \vdots & \ddots & \vdots\\
+            u_s & u_{s+1} & \cdots & u_{s+K-1}\\
+            0 & 0 & \cdots & 0\\
+            \vdots & \vdots & \ddots & \vdots\\
+            0 & 0 & \cdots & 0
+        \end{pmatrix},
+    \]
+    где нижний нулевой блок может быть пустым. Следовательно, ненулевых строк
+    траекторной матрицы не больше $y_N$, и
+    \begin{equation}
+        \rank\Hankel_L(u)
+        \le
+        \max(y_N,0).
+        \label{eq:rank-by-yN}
+    \end{equation}
+
+    Аналогично, если $y_1>N_{\mathrm{row}}$, то уже первый возможный индекс
+    строки больше $N_{\mathrm{row}}$, поэтому ряд $u$ нулевой. Если
+    $y_1\le N_{\mathrm{row}}$, то ненулевые элементы могут встречаться только
+    при индексах $r\ge y_1$. Напомним, что
+    \[
+        \bigl(\Hankel_L(u)\bigr)_{p,\ell}=u_{p+\ell-1},
+        \qquad
+        p=1,\dots,L,\quad \ell=1,\dots,K.
+    \]
+    Значит $\ell$-й столбец траекторной матрицы состоит из элементов ряда с
+    индексами
+    \[
+        \ell,\ \ell+1,\ \dots,\ \ell+L-1.
+    \]
+    Если $\ell+L-1<y_1$, то все эти индексы меньше $y_1$, поэтому весь
+    $\ell$-й столбец нулевой. Иначе говоря, первые возможные ненулевые
+    столбцы начинаются только с
+    \[
+        \ell_0=\max(1,\ y_1-L+1),
+    \]
+    и траекторная матрица имеет схематический вид
+    \[
+        \Hankel_L(u)=
+        \begin{pmatrix}
+            0 & \cdots & 0 & u_{\ell_0} & \cdots & u_K\\
+            0 & \cdots & 0 & u_{\ell_0+1} & \cdots & u_{K+1}\\
+            \vdots & \ddots & \vdots & \vdots & \ddots & \vdots\\
+            0 & \cdots & 0 & u_{\ell_0+L-1} & \cdots & u_{N_{\mathrm{row}}}
+        \end{pmatrix}.
+    \]
+    Здесь левый нулевой блок может быть пустым.
+    Если $y_1>L$, то таких столбцов не больше
+    \[
+        K-(y_1-L+1)+1=N_{\mathrm{row}}+1-y_1.
+    \]
+    Если же $y_1\le L$, то потенциально ненулевых столбцов не больше
+    $K=N_{\mathrm{row}}-L+1\le N_{\mathrm{row}}+1-y_1$. Следовательно, в
+    обоих случаях ненулевых столбцов не больше $N_{\mathrm{row}}+1-y_1$, и
+    \begin{equation}
+        \rank\Hankel_L(u)
+        \le
+        \max(N_{\mathrm{row}}+1-y_1,0).
+        \label{eq:rank-by-y1}
+    \end{equation}
+
+    \item Остаётся доказать оценку:
+    \begin{equation}
+        \rank\Hankel_L(u)
+        \le
+        a
+        +
+        \max(b,0)
+        +
+        \max\left(
+            N_{\mathrm{row}}+1-a(N_{\mathrm{col}}+1)-b,\ 0
+        \right).
+        \label{eq:rank-by-ab}
+    \end{equation}
+
+    Индекс строки, который соответствовал бы следующему столбцу после
+    $N_{\mathrm{col}}$, равен
+    \begin{equation}
+        y_{N+1}
+        =
+        a(N_{\mathrm{col}}+1)+b.
+        \label{eq:y-next}
+    \end{equation}
+    Введём величину
+    \begin{equation}
+        h_+
+        =
+        \max\left(
+            N_{\mathrm{row}}+1-y_{N+1},\ 0
+        \right)
+        =
+        \max\left(
+            N_{\mathrm{row}}+1-a(N_{\mathrm{col}}+1)-b,\ 0
+        \right).
+        \label{eq:h-plus}
+    \end{equation}
+    Интерпретация $h_+$ следующая: $y_{N+1}$ --- это первый индекс ряда $u$,
+    в котором нарушается периодическая структура справа, тогда $h_+$ --- это
+    количество нулей в конце ряда. Если $y_{N+1}>N_{\mathrm{row}}$, то
+    $h_+=0$. Иначе все индексы
+    $r\ge y_{N+1}$ занимают не более $h_+$ последних позиций ряда.
+
+    Ряд $u$ устроен следующим образом: в начале стоят нули, связанные со
+    сдвигом прямой, затем ненулевые элементы идут с шагом $a$, а после
+    последней точки, соответствующей столбцам $1,\dots,N_{\mathrm{col}}$,
+    может остаться нулевой хвост:
+    \begin{equation*}
+        u=
+        (
+        \underbrace{0,\dots,0}_{\max(b,0)},
+        \quad
+        \dots,\ *,
+        \underbrace{0,\dots,0}_{a-1},
+        *,
+        \underbrace{0,\dots,0}_{a-1},
+        *,\dots,
+        \quad
+        \underbrace{0,\dots,0}_{h_+}
+        ).
+    \end{equation*}
+    Здесь $*$ обозначает значения вида $A\rho_q^{m-1}$. Эта структура
+    нарушается на краях ряда: отсутствуют члены с $m\le0$ и с
+    $m\ge N_{\mathrm{col}}+1$. Поэтому рассмотрим вспомогательный ряд с той
+    же структурой без ограничения $1\le m\le N_{\mathrm{col}}$, а затем
+    вычтем две краевые части.
+
+    Введём вспомогательный конечный ряд $v=(v_1,\dots,v_{N_{\mathrm{row}}})$:
+    \begin{equation}
+        v_r
+        =
+        \begin{cases}
+            A\rho_q^{m-1}, & r=am+b,\quad m\in\mathbb Z,\\
+            0, & \text{иначе}.
+        \end{cases}
+        \qquad
+        r=1,\dots,N_{\mathrm{row}}.
+        \label{eq:v-definition}
+    \end{equation}
+    Для него выполнено рекуррентное соотношение для всех допустимых индексов:
+    \begin{equation}
+        v_{r+a}=\rho_q v_r.
+        \label{eq:v-recursion}
+    \end{equation}
+    Следовательно, строки траекторной матрицы $\Hankel_L(v)$ удовлетворяют
+    \begin{equation*}
+        V_{p+a}=\rho_q V_p,
+    \end{equation*}
+    поэтому все строки выражаются через первые $a$ строк. Значит
+    \begin{equation}
+        \rank\Hankel_L(v)\le a.
+        \label{eq:rank-v}
+    \end{equation}
+
+    Отделим в $v$ члены с номерами столбцов $m$ вне диапазона
+    $1,\dots,N_{\mathrm{col}}$. Для $m\le0$ положим
+    \begin{equation}
+        w^-_r
+        =
+        \begin{cases}
+            A\rho_q^{m-1}, & r=am+b,\quad m\le0,\\
+            0, & \text{иначе}.
+        \end{cases}
+        \label{eq:w-minus}
+    \end{equation}
+    Если $b\le0$, то $w^-_r=0$ для всех $r$. Если $b>0$, то, в силу
+    положительности $a$, наибольший
+    возможный индекс строки у ненулевого элемента $w^-$ соответствует $m=0$
+    и равен $b$. Поэтому траекторная матрица $\Hankel_L(w^-)$ имеет не более
+    $\max(b,0)$ ненулевых строк, и
+    \begin{equation}
+        \rank\Hankel_L(w^-)
+        \le
+        \max(b,0).
+        \label{eq:rank-w-minus}
+    \end{equation}
+
+    Для $m\ge N_{\mathrm{col}}+1$ положим
+    \begin{equation}
+        w^+_r
+        =
+        \begin{cases}
+            A\rho_q^{m-1}, & r=am+b,\quad m\ge N_{\mathrm{col}}+1,\\
+            0, & \text{иначе}.
+        \end{cases}
+        \label{eq:w-plus}
+    \end{equation}
+    Если $w^+_r\ne0$, то $r=am+b$ для некоторого
+    $m\ge N_{\mathrm{col}}+1$. Минимальный такой индекс равен
+    $a(N_{\mathrm{col}}+1)+b=y_{N+1}$. Значит внутри диапазона
+    $1,\dots,N_{\mathrm{row}}$ ряд $w^+$ может быть ненулевым только не более
+    чем на последних $h_+$ позициях. Следовательно,
+    \begin{equation}
+        \rank\Hankel_L(w^+)
+        \le
+        h_+
+        =
+        \max\left(
+            N_{\mathrm{row}}+1-a(N_{\mathrm{col}}+1)-b,\ 0
+        \right).
+        \label{eq:rank-w-plus}
+    \end{equation}
+
+    По построению
+    \begin{equation}
+        u=v-w^- -w^+.
+        \label{eq:u-v-decomposition}
+    \end{equation}
+    Траекторное отображение линейно, поэтому
+    \begin{equation}
+        \Hankel_L(u)
+        =
+        \Hankel_L(v)
+        -
+        \Hankel_L(w^-)
+        -
+        \Hankel_L(w^+).
+        \label{eq:hankel-decomposition}
+    \end{equation}
+    Используя свойство ранга
+    \[
+        \rank(M_1+M_2+M_3)
+        \le
+        \rank M_1+\rank M_2+\rank M_3,
+    \]
+    и подставляя оценки \eqref{eq:rank-v}, \eqref{eq:rank-w-minus},
+    \eqref{eq:rank-w-plus}, получаем \eqref{eq:rank-by-ab}.
+\end{enumerate}
+
+Из пунктов 1--3 следует \eqref{eq:safe-rank-bound}.
+
+\end{proof}
+
+От случая $a>0$ можно перейти к случаю $a<0$ с помощью отражения строк изображения относительно середины.
+
+\begin{statement}
+\label{st:colrow-safe-rank-integer}
+Пусть в \eqref{eq:X-definition} допускается произвольное целое $a\ne0$.
+Положим
+\[
+    \alpha=|a|.
+\]
+Если $a>0$, положим
+\[
+    y_1=a+b,
+    \qquad
+    y_N=aN_{\mathrm{col}}+b.
+\]
+Если $a<0$, положим
+\[
+    y_1=N_{\mathrm{row}}+1-(a+b),
+    \qquad
+    y_N=N_{\mathrm{row}}+1-(aN_{\mathrm{col}}+b).
+\]
+Тогда для фиксированного столбца $u$ после построчного DFT выполнена оценка
+\begin{equation}
+    \rank \Hankel_L(u)
+    \le
+    \widehat{R},
+    \label{eq:integer-safe-rank-bound}
+\end{equation}
+где
+\begin{equation}
+    \begin{aligned}
+    \widehat{R}
+    =
+    \min\{&
+        L,\ K,
+        \max(y_N,0),
+        \max(N_{\mathrm{row}}+1-y_1,0),
+        \\
+        &
+        \max(\alpha,y_1)
+        +
+        \max(N_{\mathrm{row}}+1-y_N-\alpha,0)
+    \}.
+    \end{aligned}
+    \label{eq:integer-y-safe-rank}
+\end{equation}
+\end{statement}
+
+\begin{proof}
+При $a>0$ правая часть \eqref{eq:integer-y-safe-rank} совпадает с величиной
+$\widehat{R}$ из Утверждения~\ref{st:colrow-safe-rank-positive}. Пусть теперь $a<0$.
+Отразим строки изображения относительно середины:
+\[
+    \widetilde X_{r,m}=X_{N_{\mathrm{row}}+1-r,m}.
+\]
+Тогда линия $r=am+b$ переходит в линию
+\[
+    r=\alpha m+\widetilde b,
+    \qquad
+    \widetilde b=N_{\mathrm{row}}+1-b,
+\]
+с натуральным наклоном $\alpha=-a$. Для отражённой линии первый и последний
+индексы строк равны
+\[
+    \alpha+\widetilde b
+    =
+    N_{\mathrm{row}}+1-(a+b)=y_1,
+\]
+и
+\[
+    \alpha N_{\mathrm{col}}+\widetilde b
+    =
+    N_{\mathrm{row}}+1-(aN_{\mathrm{col}}+b)=y_N.
+\]
+Поэтому величина $\widehat{R}$ из Утверждения~\ref{st:colrow-safe-rank-positive}
+для отражённого изображения равна $\widehat{R}$.
+Построчное DFT выполняется по столбцовому индексу $m$, поэтому отражение строк
+с ним коммутирует: каждый фиксированный столбец после DFT просто переворачивается
+относительно середины ряда,
+\[
+    \widetilde u_r=u_{N_{\mathrm{row}}+1-r}.
+\]
+При таком перевороте траекторная матрица получается из исходной изменением
+порядка строк и столбцов на обратный, поэтому её ранг не меняется. Применяя
+Утверждение~\ref{st:colrow-safe-rank-positive} к отражённому изображению, получаем
+\eqref{eq:integer-safe-rank-bound}.
+\end{proof}
+
+Таким образом, при отсутствии шума для одной прямой получена достаточная оценка
+числа компонент, обеспечивающая точное восстановление соответствующего
+столбца после DFT. Тот же подход можно использовать для нескольких прямых. Если
+\[
+    u=\sum_{\ell=1}^{s} u^{(\ell)},
+\]
+где $u^{(\ell)}$ --- вклад $\ell$-й прямой в фиксированный столбец после DFT, то в
+силу линейности оператора вложения
+\[
+    \Hankel_L(u)
+    =
+    \sum_{\ell=1}^{s}\Hankel_L\bigl(u^{(\ell)}\bigr).
+\]
+Следовательно,
+\[
+    \rank\Hankel_L(u)
+    \le
+    \sum_{\ell=1}^{s}
+    \rank\Hankel_L\bigl(u^{(\ell)}\bigr).
+\]
+Поэтому для нескольких прямых можно выбирать число сохраняемых компонент не
+меньше суммы достаточных оценок ранга для отдельных прямых. Такая оценка не
+является необходимой, но дает корректное достаточное условие для применения
+\texttt{CSSA COL.ROW} к сумме нескольких прямых.
+
+\section{Пороговая фильтрация после CSSA}
+
+Напомним, что после реконструкции после CSSA изображение обычно содержит не только
+восстановленную линию, но и слабые остаточные значения. Для преобразования Хафа важна не
+величина MSE, а активное множество
+\[
+E_{\tau}(\widehat{\mathbf{S}})
+=
+\{(i,j):\widehat S_{ij}>\tau\}.
+\]
+Поэтому после CSSA полезно вводить дополнительную пороговую фильтрацию. Один
+из способов выбрать порог --- это оценить уровень шума в восстановленном
+изображении. Для этого используем некоторые утверждения про шум и дискретное
+преобразование Фурье.
+
+\begin{statement}
+Пусть $\boldsymbol{\varepsilon}\sim\mathcal{N}(0,\sigma^2 I_N)$ --- вещественный
+гауссовский белый шум, а $F$ --- ненормированная матрица DFT:
+\[
+F_{kl}
+=
+\exp\!\left(
+-\frac{2\pi\mathrm{i}}{N}(k-1)(l-1)
+\right).
+\]
+Тогда $\widetilde{\boldsymbol{\varepsilon}}=F\boldsymbol{\varepsilon}$ является
+комплексным гауссовским вектором,
+\[
+\mathbb{E}\widetilde{\boldsymbol{\varepsilon}}=0,
+\qquad
+\mathbb{E}\bigl(
+\widetilde{\boldsymbol{\varepsilon}}
+\widetilde{\boldsymbol{\varepsilon}}^{*}
+\bigr)
+=
+N\sigma^2 I_N.
+\]
+\end{statement}
+
+\begin{proof}
+Линейное преобразование гауссовского вектора снова является гауссовским
+вектором, поэтому $F\boldsymbol{\varepsilon}$ сохраняет гауссовскую природу.
+Действительно, для любого комплексного вектора $a\in\mathbb C^N$ случайная
+величина
+\[
+a^{*}F\boldsymbol{\varepsilon}
+=
+(F^{*}a)^{*}\boldsymbol{\varepsilon}
+=
+\operatorname{Re}\bigl((F^{*}a)^{*}\bigr)\boldsymbol{\varepsilon}
+-
+\ii\operatorname{Im}\bigl((F^{*}a)^{*}\bigr)\boldsymbol{\varepsilon}
+\]
+является комплексной случайной величиной, вещественная и мнимая части которой
+являются линейными комбинациями координат вещественного гауссовского вектора
+$\boldsymbol{\varepsilon}$. Значит, $a^{*}F\boldsymbol{\varepsilon}$ имеет
+комплексное гауссовское распределение для любого $a$, то есть
+$F\boldsymbol{\varepsilon}$ является комплексным гауссовским вектором.
+Среднее равно нулю. Ковариационная матрица имеет вид
+\[
+\mathbb{E}\bigl(
+F\boldsymbol{\varepsilon}
+(F\boldsymbol{\varepsilon})^{*}
+\bigr)
+=
+F\,\mathbb{E}(\boldsymbol{\varepsilon}\boldsymbol{\varepsilon}^{\top})\,F^{*}
+=
+\sigma^2 FF^{*}.
+\]
+При этом элемент произведения $FF^*$ с индексами $(k,\ell)$ равен
+\[
+\begin{aligned}
+(FF^{*})_{k\ell}
+&=
+\sum_{s=1}^{N}
+F_{ks}(F^{*})_{s\ell}
+\\
+&=
+\sum_{s=1}^{N}
+\exp\!\left(
+-\frac{2\pi\ii}{N}(k-1)(s-1)
+\right)
+\exp\!\left(
+\frac{2\pi\ii}{N}(\ell-1)(s-1)
+\right)
+\\
+&=
+\sum_{s=1}^{N}
+\exp\!\left(
+-\frac{2\pi\ii}{N}(k-\ell)(s-1)
+\right)
+=
+\begin{cases}
+N, & k=\ell,\\
+0, & k\ne\ell,
+\end{cases}
+\end{aligned}
+\]
+поскольку при $k\ne\ell$ суммируется геометрическая прогрессия с множителем,
+отличным от единицы. Значит, $FF^{*}=NI_N$, откуда и следует заявленная формула.
+\end{proof}
+
+\begin{corollary}
+Пусть $\boldsymbol{\eta}$ --- комплексный гауссовский шум:
+\[
+\mathbb{E}\boldsymbol{\eta}=0,
+\qquad
+\mathbb{E}(\boldsymbol{\eta}\boldsymbol{\eta}^{*})
+=
+\widehat{\sigma}^{\,2}I_N.
+\]
+Тогда для ненормированного DFT
+\[
+\mathbb{E}\bigl(
+\mathcal{F}^{-1}(\boldsymbol{\eta})
+\mathcal{F}^{-1}(\boldsymbol{\eta})^{*}
+\bigr)
+=
+\frac{\widehat{\sigma}^{\,2}}{N}I_N.
+\]
+\end{corollary}
+
+\begin{proof}
+Так как $\mathcal{F}^{-1}=N^{-1}F^{*}$, получаем
+\[
+\mathbb{E}\bigl(
+\mathcal{F}^{-1}(\boldsymbol{\eta})
+\mathcal{F}^{-1}(\boldsymbol{\eta})^{*}
+\bigr)
+=
+\frac{1}{N^2}
+F^{*}\,
+\mathbb{E}(\boldsymbol{\eta}\boldsymbol{\eta}^{*})\,
+F
+=
+\frac{\widehat{\sigma}^{\,2}}{N^2}F^{*}F
+=
+\frac{\widehat{\sigma}^{\,2}}{N}I_N.
+\]
+\end{proof}
+
+Таким образом, один из вариантов состоит в том, чтобы использовать остаток для
+задания порога. В SSA синусоидальная компонента является сигналом конечного
+ранга, а белый шум при росте длины ряда асимптотически отделим от такого
+сигнала \cite{ts_structure}. Поэтому после
+выделения компонент CSSA, соответствующих сигналу, остаток естественно
+рассматривать как оценку шума и использовать его для формирования порога $\tau$.
+Пусть после DFT по строкам изображение представлено в виде
+\[
+\mathbf{Z}=\mathbf{S}+\boldsymbol{\eta},
+\]
+а после CSSA получена оценка $\widehat{\mathbf{S}}$. Тогда
+\[
+\mathbf{r}=\mathbf{Z}-\widehat{\mathbf{S}}
+\]
+является оценкой шумовой части. После обратного DFT положим
+\[
+\widehat D
+=
+\frac{1}{N}
+\left\|
+\mathcal{F}^{-1}(\mathbf{r})
+\right\|_2^2,
+\qquad
+\widehat\sigma=\sqrt{\widehat D}.
+\]
+Тогда порог задается в виде
+\[
+\tau=c\,\widehat\sigma
+=
+c\sqrt{\widehat D}.
+\]
+Коэффициент $c$ подбирается экспериментально и зависит от уровня шума,
+интенсивности линий и числа прямых.
+
+На рис.~\ref{fig:threshold-row-col} показан пример действия такой фильтрации для
+методов \texttt{CSSA ROW.ROW} и \texttt{CSSA COL.ROW}. Верхний ряд соответствует
+восстановленным матрицам до пороговой обработки, нижний ряд --- матрицам после
+пороговой фильтрации. После отсечения слабых остаточных значений активное множество
+становится более разреженным, что уменьшает число посторонних точек, передаваемых
+в преобразование Хафа.
+
+\begin{figure}[H]
+	\centering
+	\begin{subfigure}{0.48\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{row_row_before_threshold.png}
+		\caption{\texttt{ROW.ROW}, до порога}
+	\end{subfigure}
+	\hfill
+	\begin{subfigure}{0.48\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{col_row_before_threshold.png}
+		\caption{\texttt{COL.ROW}, до порога}
+	\end{subfigure}
+
+	\vspace{0.4em}
+
+	\begin{subfigure}{0.48\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{row_row_after_threshold.png}
+		\caption{\texttt{ROW.ROW}, после порога}
+	\end{subfigure}
+	\hfill
+	\begin{subfigure}{0.48\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{col_row_after_threshold.png}
+		\caption{\texttt{COL.ROW}, после порога}
+	\end{subfigure}
+	\caption{Пороговая фильтрация восстановленных матриц для \texttt{CSSA ROW.ROW} и \texttt{CSSA COL.ROW}}
+	\label{fig:threshold-row-col}
+\end{figure}
+
+Другой вариант состоит в анализе гистограммы восстановленных значений. Если
+на изображении несколько прямых с разными интенсивностями, то нужно сохранять
+кластеры, соответствующие линиям, и удалять промежуточные остаточные значения.
+Особенно важно не потерять слабую линию: если выделены несколько кластеров
+линий по интенсивности, порог должен быть ниже среднего значения минимального
+кластера, который соответствует линии малой интенсивности.
+

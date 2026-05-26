@@ -1,0 +1,218 @@
+---
+title: "Shifted maximum component search"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup}
+rm(list = ls())
+
+locate_one_row_dir <- function() {
+  candidates <- character()
+
+  input_path <- tryCatch(knitr::current_input(), error = function(e) "")
+  if (length(input_path) == 1 && nzchar(input_path)) {
+    candidates <- c(
+      candidates,
+      dirname(normalizePath(input_path, winslash = "/", mustWork = FALSE))
+    )
+  }
+
+  candidates <- c(
+    candidates,
+    normalizePath(getwd(), winslash = "/", mustWork = FALSE),
+    normalizePath(file.path(getwd(), "VKR", "VKR_TEXT", "scripts", "one_row"), winslash = "/", mustWork = FALSE)
+  )
+
+  candidates <- unique(candidates[file.exists(file.path(candidates, "shift_component_search.Rmd"))])
+  if (length(candidates) == 0) {
+    stop("Could not locate shift_component_search.Rmd directory.")
+  }
+
+  normalizePath(candidates[1], winslash = "/", mustWork = TRUE)
+}
+
+script_dir <- locate_one_row_dir()
+project_root <- normalizePath(file.path(script_dir, "..", ".."), winslash = "/", mustWork = TRUE)
+repo_root <- normalizePath(file.path(project_root, "..", ".."), winslash = "/", mustWork = TRUE)
+setwd(script_dir)
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+
+source(file.path(repo_root, "ssa-based methods", "cssa-transform.r"))
+
+set.seed(1111)
+```
+
+## Parameters
+
+```{r parameters}
+n <- 100
+sigma_noise <- 0.2
+num_components_signal <- 1
+
+fixed_noise_matrix <- add.noise(matrix(0, nrow = 1, ncol = n), sigma = sigma_noise)
+
+build_fixed_noise_case <- function(signal_ind, noise_matrix) {
+  clean_matrix <- matrix(0, nrow = 1, ncol = n)
+  clean_matrix[1, signal_ind] <- 1
+
+  noisy_matrix <- clean_matrix + noise_matrix
+  noisy_dft_matrix <- dft(noisy_matrix)
+  fit <- ssa(noisy_dft_matrix[1, ], kind = "cssa", svd.method = "svd")
+
+  est <- Re(idft.row(cssa.row(noisy_dft_matrix, num.line = num_components_signal)))
+  est <- as.numeric(est[1, ])
+
+  list(
+    signal_ind = signal_ind,
+    max_ind = which.max(est),
+    clean_matrix = clean_matrix,
+    noisy_matrix = noisy_matrix,
+    noisy_dft_matrix = noisy_dft_matrix,
+    fit = fit,
+    est = est
+  )
+}
+```
+
+## Search helpers
+
+```{r helpers}
+reconstruct_component_row <- function(fit, component_index) {
+  component_dft <- Rssa::reconstruct(
+    fit,
+    groups = list(component = component_index)
+  )$component
+
+  reconstruction <- as.numeric(Re(idft.row(matrix(component_dft, nrow = 1))))
+
+  list(
+    component_dft = component_dft,
+    reconstruction = reconstruction
+  )
+}
+
+find_shift_case <- function(noise_matrix, build_case, search_idx = 7:ncol(noise_matrix)) {
+  for (candidate_signal_ind in search_idx) {
+    candidate_case <- build_case(candidate_signal_ind, noise_matrix)
+    if (candidate_case$max_ind != candidate_case$signal_ind) {
+      return(candidate_case)
+    }
+  }
+
+  stop("No shifted maximum case found.")
+}
+
+find_component_with_true_max <- function(case, max_components = 12L) {
+  max_components <- min(max_components, length(case$fit$sigma))
+
+  component_info <- lapply(seq_len(max_components), function(component_index) {
+    rec <- reconstruct_component_row(case$fit, component_index)
+    row <- rec$reconstruction
+    max_ind <- which.max(row)
+
+    data.frame(
+      component = component_index,
+      singular_value = case$fit$sigma[component_index],
+      max_singular_value = max(case$fit$sigma),
+      max_ind = max_ind,
+      true_ind = case$signal_ind,
+      true_value = row[case$signal_ind],
+      max_value = row[max_ind],
+      abs_shift = abs(max_ind - case$signal_ind)
+    )
+  })
+
+  component_info <- do.call(rbind, component_info)
+  exact <- component_info[component_info$max_ind == component_info$true_ind, ]
+
+  if (nrow(exact) > 0) {
+    chosen <- exact[which.max(exact$singular_value), ]
+    chosen$selection_rule <- "max_ind == true_ind; largest singular value among exact hits"
+  } else {
+    chosen <- component_info[order(component_info$abs_shift, -component_info$true_value), ][1, ]
+    chosen$selection_rule <- "no exact hit; closest argmax to true index"
+  }
+
+  rec <- reconstruct_component_row(case$fit, as.integer(chosen$component[1]))
+  component_table <- data.frame(
+    index = seq_along(rec$component_dft),
+    component_real = Re(rec$component_dft),
+    component_imag = Im(rec$component_dft),
+    reconstruction = rec$reconstruction
+  )
+
+  list(
+    shift_case = data.frame(
+      true_ind = case$signal_ind,
+      cssa_rank1_max_ind = case$max_ind,
+      cssa_rank1_true_value = case$est[case$signal_ind],
+      cssa_rank1_max_value = case$est[case$max_ind]
+    ),
+    component_scores = component_info,
+    chosen_component = chosen,
+    component = rec$component_dft,
+    reconstruction = rec$reconstruction,
+    component_table = component_table
+  )
+}
+```
+
+## Result
+
+```{r result}
+shift_case <- find_shift_case(
+  fixed_noise_matrix,
+  build_case = build_fixed_noise_case,
+  search_idx = 7:n
+)
+
+component_search <- find_component_with_true_max(shift_case, max_components = 12L)
+
+component_search$shift_case
+component_search$component_scores
+component_search$chosen_component
+component_search$component_table
+```
+
+```{r plots}
+old_par <- par(mfrow = c(1, 2), mar = c(3, 4, 3, 1))
+
+plot(
+  shift_case$est,
+  type = "h",
+  lwd = 2,
+  col = "grey40",
+  xlab = "Index",
+  ylab = "Amplitude",
+  main = sprintf("CSSA rank 1: %d -> %d", shift_case$signal_ind, shift_case$max_ind)
+)
+abline(v = shift_case$signal_ind, col = "firebrick", lty = 2)
+abline(v = shift_case$max_ind, col = "steelblue", lty = 2)
+
+plot(
+  component_search$reconstruction,
+  type = "h",
+  lwd = 2,
+  col = "grey20",
+  xlab = "Index",
+  ylab = "Amplitude",
+  main = sprintf(
+    "Component %d: maximum %d",
+    component_search$chosen_component$component,
+    component_search$chosen_component$max_ind
+  )
+)
+abline(v = shift_case$signal_ind, col = "firebrick", lty = 2)
+abline(v = component_search$chosen_component$max_ind, col = "steelblue", lty = 2)
+
+par(old_par)
+```

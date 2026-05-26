@@ -1,0 +1,561 @@
+﻿% !TeX root = Report.tex
+\chapter{Описание алгоритмов и схема оценивания}
+
+В данной главе описывается математическая постановка задачи и вводятся
+алгоритмы, используемые далее в численном исследовании.
+
+\section{Модель изображения и параметризация прямой}
+
+Рассматривается изображение в градациях серого, представленное матрицей
+\[
+\mathbf{M} = (M_{ij}) \in \mathbb{R}^{N_{\mathrm{row}} \times N_{\mathrm{col}}}.
+\]
+Здесь $N_{\mathrm{row}}$ --- число строк изображения, а $N_{\mathrm{col}}$ ---
+число столбцов. Предполагается, что наблюдаемое изображение раскладывается в
+сумму нескольких компонент сигнала и шумовой компоненты:
+\[
+\mathbf{M} = \sum_{\ell=1}^{q} \mathbf{S}^{(\ell)} + \mathbf{R},
+\]
+где $q$ --- число прямых на изображении, $\mathbf{S}^{(\ell)}$ --- матрица
+сигнала, соответствующая $\ell$-й прямой, а элементы шумовой матрицы
+$\mathbf{R}$ независимы и имеют распределение $\mathcal{N}(0,\sigma^2)$.
+
+Пусть $\ell$-я прямая задается параметрами $a_\ell$ и $b_\ell$. Тогда ей
+соответствует множество
+\[
+\Gamma_\ell
+=
+\left\{
+(i,j)\in\{1,\dots,N_{\mathrm{row}}\}\times\{1,\dots,N_{\mathrm{col}}\}
+\colon
+i = [a_\ell j+b_\ell]
+\right\},
+\]
+где $[\cdot]$ обозначает целую часть. Матрица сигнала для этой прямой имеет вид
+\[
+S^{(\ell)}_{ij}
+=
+c_\ell \mathbf{1}\{(i,j)\in\Gamma_\ell\}.
+\]
+Значения вне $\Gamma_\ell$ равны нулю, а внутри равны числу $c_\ell>0$,
+которое мы будем называть интенсивностью. Если несколько прямых проходят через
+один и тот же пиксель, итоговая яркость в этой точке определяется суммой
+соответствующих интенсивностей.
+
+\section{Преобразование Хафа}
+
+Для описания прямых используется параметризация
+\[
+\rho = x \cos \theta + y \sin \theta,
+\]
+где $\rho$ --- расстояние от начала координат до прямой, а $\theta$ --- угол
+нормали к прямой \cite{duda1972hough}. Такая запись позволяет рассматривать
+как наклонные, так и вертикальные прямые.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.5\textwidth]{rt_params.pdf}
+	\caption{Параметризация прямой через $(\rho,\theta)$}
+	\label{fig:rt-params}
+\end{figure}
+
+Пусть после предобработки получена матрица $\widetilde{\mathbf{M}}$. Для
+заданного порога $\varepsilon>0$ рассмотрим множество
+\[
+E_{\varepsilon}(\widetilde{\mathbf{M}})
+=
+\{(i,j)\colon \widetilde{M}_{ij}>\varepsilon\}.
+\]
+Будем называть $E_{\varepsilon}(\widetilde{\mathbf{M}})$ активным множеством,
+а его элементы --- активными элементами матрицы.
+На рис.~\ref{fig:one-line-example} показан пример бинарного изображения, в
+котором активное множество соответствует прямой $y=x-10$.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.44\textwidth]{chapter1_one_line_clean.png}
+	\caption{Пример матрицы изображения с одной прямой $y=x-10$}
+	\label{fig:one-line-example}
+\end{figure}
+
+Для фиксированной активной точки $(x_0,y_0)$ все прямые, проходящие через нее,
+имеют параметры $(\rho,\theta)$, удовлетворяющие уравнению
+\[
+\rho(\theta; x_0, y_0) = \rho(\theta)=x_0\cos\theta+y_0\sin\theta.
+\]
+Если несколько активных точек лежат на одной прямой, то соответствующие кривые
+в пространстве параметров имеют общую точку.
+
+В рассматриваемой постановке задачи пространство параметров заменяется сеткой.
+Параметр $\rho$ может принимать значения от $-\rho_{\max}$ до $\rho_{\max}$,
+где
+\[
+\rho_{\max}
+=
+\left\lceil
+\sqrt{N_{\mathrm{row}}^2+N_{\mathrm{col}}^2}
+\right\rceil.
+\]
+При заданных шагах $h_\rho$ и $h_\theta$ дискретизации параметры принимают значения
+\[
+\rho_u = -\rho_{\max} + u h_\rho,
+\qquad
+u=0,\dots,\left\lfloor\frac{2\rho_{\max}}{h_\rho}\right\rfloor,
+\]
+\[
+\theta_v = v h_\theta,
+\qquad
+v=0,\dots,\left\lfloor\frac{\pi}{h_\theta}\right\rfloor.
+\]
+То есть $\rho$ меняется от $-\rho_{\max}$ до последнего узла сетки, не
+превосходящего $\rho_{\max}$, а $\theta$ --- от $0$ до последнего узла сетки,
+не превосходящего $\pi$.
+
+Аккумуляторный массив $A=(A_{uv})$ задается формулой
+\[
+A_{uv}
+=
+\sum_{(x_0,y_0)\in E_{\varepsilon}(\widetilde{\mathbf{M}})}
+\mathbf{1}
+\left\{
+\left|
+\rho_u - \rho(\theta_v;x_0,y_0)
+\right|
+\le \frac{h_\rho}{2}
+\right\}.
+\]
+Другими словами, аккумуляторный массив кодирует пересечения кривых
+$\rho(\theta)$. Большие значения $A_{uv}$ соответствуют тем параметрам
+$(\rho_u,\theta_v)$, для которых большее число активных точек исходного
+изображения лежит на одной прямой с такими параметрами. Поэтому локальные
+максимумы аккумуляторного массива рассматриваются как оценки параметров прямых
+на изображении:
+\[
+(\widehat{\rho},\widehat{\theta})
+=
+(\rho_{\widehat{u}},\theta_{\widehat{v}}),
+\qquad
+(\widehat{u},\widehat{v})
+\in
+\argmax_{u,v} A_{uv}.
+\]
+Алгоритм преобразования Хафа изложен ниже.
+
+\begin{algorithm}[H]
+	\caption{Алгоритм преобразования Хафа}
+	\begin{algorithmic}[1]
+		\small
+		\Require матрица изображения $\widetilde{\mathbf{M}}\in\mathbb{R}^{N_{\mathrm{row}}\times N_{\mathrm{col}}}$, порог активности $\varepsilon>0$, шаги $h_\rho$, $h_\theta$
+		\Ensure аккумуляторный массив $A$, оценка параметров прямой $(\widehat{\rho},\widehat{\theta})$
+		\State $E_{\varepsilon}(\widetilde{\mathbf{M}})\gets\{(i,j):\widetilde{M}_{ij}>\varepsilon\}$
+		\State $\rho_{\max}\gets\left\lceil\sqrt{N_{\mathrm{row}}^2+N_{\mathrm{col}}^2}\right\rceil$
+		\State $U\gets\left\lfloor 2\rho_{\max}/h_\rho\right\rfloor$, \quad $V\gets\left\lfloor \pi/h_\theta\right\rfloor$
+		\State $\rho_u\gets-\rho_{\max}+u h_\rho$, $u=0,\dots,U$; \quad $\theta_v\gets v h_\theta$, $v=0,\dots,V$; \quad $A_{uv}\gets 0$
+		\For{каждого $(i,j)\in E_{\varepsilon}(\widetilde{\mathbf{M}})$ и каждого $v=0,\dots,V$}
+			\State $\rho(\theta_v)\gets j\cos\theta_v+i\sin\theta_v$
+			\State выбрать $u\in\{0,\dots,U\}: |\rho_u-\rho(\theta_v)|\le h_\rho/2$
+			\State $A_{uv}\gets A_{uv}+1$
+		\EndFor
+		\State $(\widehat{u},\widehat{v})\in\argmax_{u,v}A_{uv}$
+		\State положить $(\widehat{\rho},\widehat{\theta})\gets(\rho_{\widehat{u}},\theta_{\widehat{v}})$
+		\State \Return $A$, $(\widehat{\rho},\widehat{\theta})$
+	\end{algorithmic}
+\end{algorithm}
+
+На рис.~\ref{fig:accumulator} показан пример преобразования Хафа для
+изображения с двумя прямыми $y=2x-1$ и $y=-x+101$. На аккумуляторном массиве
+выделяются две области, в которых пересекается наибольшее число кривых
+$\rho(\theta;x_k,y_k)$; положения этих областей определяют параметры
+соответствующих прямых.
+
+\begin{figure}[!htbp]
+	\centering
+	\begin{subfigure}{0.45\textwidth}
+		\centering
+		\includegraphics[width=\textwidth,height=0.30\textheight,keepaspectratio]{chapter1_two_lines_clean.png}
+		\caption{Матрица изображения}
+	\end{subfigure}
+	\hfill
+	\begin{subfigure}{0.45\textwidth}
+		\centering
+		\includegraphics[width=\textwidth,height=0.30\textheight,keepaspectratio]{chapter1_two_lines_accumulator.png}
+		\caption{Аккумуляторный массив}
+	\end{subfigure}
+	\caption{Пример преобразования Хафа для изображения с двумя прямыми $y=2x-1$ и $y=-x+101$}
+	\label{fig:accumulator}
+\end{figure}
+
+Если после шумоподавления в изображении сохраняется много ложных активных
+точек, то в пространстве параметров возникают дополнительные максимумы, и
+точность итоговых оценок прямой ухудшается. Поэтому качество предобработки
+непосредственно влияет на качество оценивания параметров.
+
+\section{Метод SSA и его комплекснозначный вариант}
+
+Метод анализа сингулярного спектра SSA предназначен для представления ряда в
+виде суммы интерпретируемых компонент, например тренда, периодических
+составляющих и шума \cite{ts_structure,ssa_with_r}. Комплекснозначный вариант
+Complex SSA обобщает эту конструкцию на случай комплексных рядов и особенно
+удобен в задачах, где после преобразования Фурье сигнал естественно становится
+комплекснозначным \cite{zhornikova2016}.
+
+Рассмотрим комплексный временной ряд
+\[
+z = (z_1,\dots,z_N), \qquad z_k \in \mathbb{C}.
+\]
+Алгоритм CSSA состоит из четырех основных этапов.
+
+\textbf{1. Вложение.}
+Выбирается длина окна $L$, где $1 < L < N$, и строится траекторная матрица
+\[
+\mathbf{X} = \mathcal{T}_L(z) =
+\begin{pmatrix}
+	z_1 & z_2 & \dots & z_K \\
+	z_2 & z_3 & \dots & z_{K+1} \\
+	\vdots & \vdots & \ddots & \vdots \\
+	z_L & z_{L+1} & \dots & z_N
+\end{pmatrix},
+\qquad K = N-L+1.
+\]
+Эта матрица ганкелева, то есть элементы на ее побочных диагоналях совпадают.
+
+\textbf{2. Сингулярное разложение.}
+Для траекторной матрицы строится матрица
+\[
+\mathbf{C}_{\mathbf{X}} = \mathbf{X}\mathbf{X}^{*},
+\]
+где $\mathbf{X}^{*} = \overline{\mathbf{X}}^{T}$ --- эрмитово сопряженная
+матрица, где $\overline{A}$ обозначает комплексное сопряжение элементов
+произвольной матрицы $A$. Матрица $\mathbf{C}_{\mathbf{X}}$ является эрмитовой
+и неотрицательно определенной. Поэтому все ее собственные числа неотрицательны
+и могут быть упорядочены по невозрастанию:
+\[
+\lambda_1 \ge \lambda_2 \ge \dots \ge \lambda_L \ge 0.
+\]
+Если $d=\max\{i\colon \lambda_i>0\}$, то сингулярное разложение записывается
+в виде
+\[
+\mathbf{X} = \sum_{i=1}^{d}\mathbf{X}_i
+=
+\sum_{i=1}^{d}\sqrt{\lambda_i}\,U_iV_i^{*},
+\]
+где $U_i$ и $V_i$ --- левые и правые сингулярные векторы. Числа
+$\sqrt{\lambda_i}$ называются сингулярными числами. Наборы
+$(\sqrt{\lambda_i},U_i,V_i)$ принято называть собственными тройками, а $d$ ---
+рангом временного ряда.
+
+\textbf{3. Группировка.}
+Выделяется множество индексов $I$, соответствующее компонентам сигнала, и
+строится сумма
+\[
+\mathbf{X}_I = \sum_{i\in I}\mathbf{X}_i.
+\]
+Именно на этом шаге отделяется предполагаемая часть ряда, соответствующая сигналу, от шумовой.
+
+\textbf{4. Восстановление.}
+К матрице $\mathbf{X}_I$ применяется оператор диагонального усреднения
+$\mathcal{H}_L$, в результате чего получается восстановленный ряд
+\[
+\widehat{z} = \mathcal{T}_L^{-1}\bigl(\mathcal{H}_L(\mathbf{X}_I)\bigr).
+\]
+
+\section{Четыре варианта CSSA для изображений}
+
+Матрица изображения
+$\mathbf{M}\in\mathbb{R}^{N_{\mathrm{row}}\times N_{\mathrm{col}}}$
+рассматривается как система одномерных рядов. После применения прямого
+преобразования Фурье по строкам каждая строка изображения переходит в
+комплексный ряд, который можно обрабатывать методом CSSA либо по строкам, либо
+по столбцам. Полученная комплексная матрица затем восстанавливается с помощью
+обратного преобразования Фурье по строкам или по столбцам. Выбор измерения для
+CSSA и измерения для обратного преобразования порождает четыре естественных
+варианта алгоритма.
+
+Обозначим через $\mathcal{F}_{\mathrm{row}}$ прямое преобразование Фурье по
+строкам матрицы, через $\mathcal{F}^{-1}_{\mathrm{row}}$ и
+$\mathcal{F}^{-1}_{\mathrm{col}}$ --- обратные преобразования по строкам и
+столбцам, а через $\mathcal{C}_{\mathrm{row}}^{(r)}$ и
+$\mathcal{C}_{\mathrm{col}}^{(r)}$ --- применение CSSA к каждой строке или
+каждому столбцу с сохранением $r$ компонент. Тогда рассматриваются следующие
+четыре варианта:
+\begin{align*}
+\widehat{\mathbf{S}}_{\mathrm{ROW.ROW}}
+&=
+\operatorname{Re}\!\Bigl(
+\mathcal{F}^{-1}_{\mathrm{row}}
+\bigl(
+\mathcal{C}_{\mathrm{row}}^{(r)}(\mathcal{F}_{\mathrm{row}}(\mathbf{M}))
+\bigr)
+\Bigr), \\
+\widehat{\mathbf{S}}_{\mathrm{ROW.COL}}
+&=
+\operatorname{Re}\!\Bigl(
+\mathcal{F}^{-1}_{\mathrm{col}}
+\bigl(
+\mathcal{C}_{\mathrm{row}}^{(r)}(\mathcal{F}_{\mathrm{row}}(\mathbf{M}))
+\bigr)
+\Bigr), \\
+\widehat{\mathbf{S}}_{\mathrm{COL.ROW}}
+&=
+\operatorname{Re}\!\Bigl(
+\mathcal{F}^{-1}_{\mathrm{row}}
+\bigl(
+\mathcal{C}_{\mathrm{col}}^{(r)}(\mathcal{F}_{\mathrm{row}}(\mathbf{M}))
+\bigr)
+\Bigr), \\
+\widehat{\mathbf{S}}_{\mathrm{COL.COL}}
+&=
+\operatorname{Re}\!\Bigl(
+\mathcal{F}^{-1}_{\mathrm{col}}
+\bigl(
+\mathcal{C}_{\mathrm{col}}^{(r)}(\mathcal{F}_{\mathrm{row}}(\mathbf{M}))
+\bigr)
+\Bigr).
+\end{align*}
+Из этих четырех вариантов далее рассматриваются \texttt{ROW.ROW} и
+\texttt{COL.ROW}. Для вариантов \texttt{ROW.COL} и \texttt{COL.COL} уже в
+случае одной прямой возникают сильные ограничения на вид изображения
+\cite{zhornikova2016}.
+
+\begin{statement}[\cite{zhornikova2016}]
+Пусть матрица сигнала $\mathbf{S}\in\mathbb{R}^{N_{\mathrm{row}}\times N_{\mathrm{col}}}$
+содержит одну прямую
+\[
+S_{ij}=c\,\mathbf{1}\{i=aj+b\}, \qquad c\ne 0,
+\]
+и пусть в алгоритмах CSSA сохраняется одна компонента. Тогда:
+\begin{enumerate}
+	\item вариант \texttt{ROW.COL} точно восстанавливает $\mathbf{S}$ только в частном случае
+	$a=1$, $b=0$ и $N_{\mathrm{row}}=N_{\mathrm{col}}$;
+	\item вариант \texttt{COL.COL} точно восстанавливает $\mathbf{S}$ только в частном случае
+	$a=1$, $b=0$ и $N_{\mathrm{row}}=N_{\mathrm{col}}$.
+\end{enumerate}
+\end{statement}
+
+Так как условия $a=1$, $b=0$ и $N_{\mathrm{row}}=N_{\mathrm{col}}$ являются
+слишком ограничительными для рассматриваемых изображений, варианты
+\texttt{ROW.COL} и \texttt{COL.COL} далее не используются.
+
+Теоретическое обоснование вариантов \texttt{ROW.ROW} и \texttt{COL.ROW},
+включая точное восстановление в случае одной прямой и оценку ранга для
+нескольких прямых, приведено во второй главе.
+
+Ниже приведено алгоритмическое описание вариантов \texttt{ROW.ROW} и
+\texttt{COL.ROW}, которые будут использоваться в дальнейших разделах.
+
+\begin{algorithm}[H]
+	\caption{Алгоритм \texttt{CSSA ROW.ROW}}
+	\begin{algorithmic}[1]
+		\Require матрица изображения $\mathbf{M}\in\mathbb{R}^{N_{\mathrm{row}}\times N_{\mathrm{col}}}$, число сохраняемых компонент $r$
+		\Ensure восстановленное изображение $\widehat{\mathbf{S}}$
+		\For{$p=1,\dots,N_{\mathrm{row}}$}
+			\State вычислить DFT строки: $\boldsymbol{\xi}^{(p)} \gets \mathcal{F}(\mathbf{m}^{(p)})$
+			\State применить CSSA к ряду $\boldsymbol{\xi}^{(p)}$
+			\State сохранить $r$ компонент и получить восстановленный ряд $\widehat{\boldsymbol{\xi}}^{(p)}$
+			\State вычислить обратное DFT:
+			$\widehat{\mathbf{s}}^{(p)} \gets \operatorname{Re}(\mathcal{F}^{-1}(\widehat{\boldsymbol{\xi}}^{(p)}))$
+		\EndFor
+		\State составить матрицу $\widehat{\mathbf{S}}$ из строк $\widehat{\mathbf{s}}^{(1)},\dots,\widehat{\mathbf{s}}^{(N_{\mathrm{row}})}$
+		\State \Return $\widehat{\mathbf{S}}$
+	\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+	\caption{Алгоритм \texttt{CSSA COL.ROW}}
+	\begin{algorithmic}[1]
+		\Require матрица изображения $\mathbf{M}\in\mathbb{R}^{N_{\mathrm{row}}\times N_{\mathrm{col}}}$, число сохраняемых компонент $r$
+		\Ensure восстановленное изображение $\widehat{\mathbf{S}}$
+		\State $\mathbf{Y}_{p,\cdot}\gets \mathcal{F}(\mathbf{m}^{(p)})$, $p=1,\dots,N_{\mathrm{row}}$
+		\For{$s=1,\dots,N_{\mathrm{col}}$}
+			\State $\widehat{\mathbf{y}}_{s}\gets$ результат CSSA для $\mathbf{Y}_{\cdot,s}$ с сохранением $r$ компонент
+		\EndFor
+		\State $\widehat{\mathbf{Y}} \gets (\widehat{\mathbf{y}}_{1},\dots,\widehat{\mathbf{y}}_{N_{\mathrm{col}}})$
+		\State $\widehat{\mathbf{s}}^{(p)} \gets \operatorname{Re}(\mathcal{F}^{-1}(\widehat{\mathbf{Y}}_{p,\cdot}))$, $p=1,\dots,N_{\mathrm{row}}$
+		\State $\widehat{\mathbf{S}} \gets (\widehat{\mathbf{s}}^{(1)},\dots,\widehat{\mathbf{s}}^{(N_{\mathrm{row}})})^{\top}$
+		\State \Return $\widehat{\mathbf{S}}$
+	\end{algorithmic}
+\end{algorithm}
+
+На одном и том же зашумленном изображении варианты \texttt{ROW.ROW} и
+\texttt{COL.ROW} дают разные восстановленные матрицы: первый метод
+обрабатывает строки независимо, а второй использует структуру столбцов матрицы
+после DFT по строкам. Типичный результат работы этих двух вариантов показан на
+рис.~\ref{fig:cssa-row-col-examples}. Здесь синим цветом выделены элементы
+матрицы с отрицательными значениями.
+
+\begin{figure}[H]
+	\centering
+	\begin{subfigure}{0.48\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{chapter1_cssa_row_row_processed.png}
+		\caption{\texttt{CSSA ROW.ROW}}
+	\end{subfigure}
+	\hfill
+	\begin{subfigure}{0.48\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{chapter1_cssa_col_row_processed.png}
+		\caption{\texttt{CSSA COL.ROW}}
+	\end{subfigure}
+	\caption{Пример предобработки изображения двумя вариантами CSSA без последующей пороговой фильтрации}
+	\label{fig:cssa-row-col-examples}
+\end{figure}
+
+\section{Стандартные методы предобработки}
+
+Помимо алгоритмов на основе CSSA, в работе рассматриваются стандартные методы
+шумоподавления, применяемые к той же зашумленной матрице изображения перед
+использованием метода Хафа.
+
+\subsection*{Медианный фильтр}
+
+Медианный фильтр заменяет значение каждого пикселя медианой значений в окне
+\cite{huang1979,mafi2019}. Если через $W_{ij}$ обозначить квадратное окно вокруг
+пикселя $(i,j)$ размера $k$, то результат фильтрации имеет вид
+\[
+\widehat{M}_{ij} = \operatorname{median}\{M_{uv} \colon (u,v)\in W_{ij}\}.
+\]
+По умолчанию используется окно размера \(3\times 3\).
+Существенное свойство медианного фильтра состоит в способности подавлять
+одиночные выбросы, не размывая резкие границы столь же сильно, как линейные
+сглаживающие фильтры.
+
+\subsection*{Фильтр Винера}
+
+Фильтр Винера в общем виде строит линейную оценку сигнала, минимизирующую
+среднеквадратичную ошибку в каждом элементе матрицы \cite{wiener1949}. Далее
+рассматривается локально-адаптивная модификация этого подхода для изображений;
+соответствующее описание приводится, например, у Lim \cite{lim1990}, а сравнение
+с медианным фильтром в задаче шумоподавления изображений приведено в
+\cite{mafi2019}. Термин
+«локальный» означает, что параметры фильтра, как и в случае медианного фильтра,
+определяются отдельно для каждого пикселя по его окну.
+
+Пусть $W_{ij}$ --- квадратное окно размера $k\times k$ с центром в точке
+$(i,j)$. Стандартным считается окно размера \(5\times 5\). Тогда для каждого
+пикселя сначала вычисляются локальное среднее
+\[
+\mu_{ij} = \frac{1}{|W_{ij}|}\sum_{(u,v)\in W_{ij}} M_{uv}
+\]
+и локальная дисперсия
+\[
+\nu_{ij} =
+\frac{1}{|W_{ij}|}\sum_{(u,v)\in W_{ij}} M_{uv}^2 - \mu_{ij}^2.
+\]
+После этого вводится величина $\sigma_n^2$, обозначающая оценку дисперсии
+шумовой компоненты изображения. В рассматриваемой схеме эта величина
+определяется формулой
+\[
+\sigma_n^2 = \frac{1}{N_{\mathrm{row}}N_{\mathrm{col}}}\sum_{i=1}^{N_{\mathrm{row}}}\sum_{j=1}^{N_{\mathrm{col}}} \nu_{ij},
+\]
+то есть как среднее значение локальных дисперсий по всем пикселям изображения. Далее результат записывается как
+\[
+\widehat{M}_{ij}
+=
+\mu_{ij}
++
+\frac{\max(\nu_{ij}-\sigma_n^2,\,0)}{\max(\nu_{ij},\,\varepsilon)}
+\left(M_{ij}-\mu_{ij}\right).
+\]
+Здесь $\varepsilon>0$ --- малая константа, предотвращающая деление на ноль.
+Приведенная формула показывает, что при малой локальной дисперсии, сравнимой с
+оценкой шума, поправочный множитель оказывается малым, и значение пикселя
+смещается к локальному среднему. Если же локальная дисперсия велика, степень
+сглаживания уменьшается, что способствует сохранению локальной структуры
+изображения. Таким образом, фильтр согласуется с локальной структурой
+изображения: в почти однородных областях он подавляет шум сильнее, а в областях
+с заметной вариативностью в большей степени сохраняет полезный сигнал.
+
+\subsection*{\texttt{MAX.ROW}}
+
+Для изображений, состоящих из небольшого числа прямых, естественна простая
+строковая эвристика: в каждой строке оставить только несколько наибольших
+значений, а остальные занулить. Если предполагается, что в строке присутствует
+не более $k$ пикселей сигнала, можно определить оператор
+\[
+\mathcal{M}_{k}(\mathbf{M})_{ij}
+=
+\begin{cases}
+M_{ij}, & j \in J_i^{(k)},\\
+0, & j \notin J_i^{(k)},
+\end{cases}
+\]
+где $J_i^{(k)}$ --- множество индексов $k$ наибольших элементов в $i$-й
+строке. После этого преобразование Хафа применяется к матрице
+$\mathcal{M}_{k}(\mathbf{M})$.
+
+В дальнейшем этот подход следует сравнивать с \texttt{CSSA ROW.ROW} и
+\texttt{CSSA COL.ROW}. Он может быть полезен, когда пиксели сигнала
+действительно являются крупнейшими значениями в строке, но может работать
+некорректно при сильном шуме, пересечениях прямых и разных интенсивностях
+линий.
+
+На рис.~\ref{fig:preprocessing-five-methods} приведен пример матриц,
+полученных после разных вариантов предобработки одного и того же зашумленного
+изображения.
+
+\begin{figure}[H]
+	\centering
+	\begin{subfigure}{0.32\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{chapter1_cssa_row_row_processed.png}
+		\caption{\texttt{CSSA ROW.ROW}}
+	\end{subfigure}
+	\hfill
+	\begin{subfigure}{0.32\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{chapter1_cssa_col_row_processed.png}
+		\caption{\texttt{CSSA COL.ROW}}
+	\end{subfigure}
+	\hfill
+	\begin{subfigure}{0.32\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{chapter1_max_row_processed.png}
+		\caption{\texttt{MAX.ROW}}
+	\end{subfigure}
+
+	\vspace{0.4em}
+
+	\makebox[\textwidth][c]{%
+		\begin{subfigure}{0.32\textwidth}
+			\centering
+			\includegraphics[width=\textwidth]{chapter1_median_processed.png}
+			\caption{Median}
+		\end{subfigure}
+		\hspace{0.04\textwidth}
+		\begin{subfigure}{0.32\textwidth}
+			\centering
+			\includegraphics[width=\textwidth]{chapter1_wiener_processed.png}
+			\caption{Wiener}
+		\end{subfigure}%
+	}
+	\caption{Результаты предобработки без пороговой фильтрации для пяти сравниваемых методов}
+	\label{fig:preprocessing-five-methods}
+\end{figure}
+
+\section{Схема оценивания}
+
+Во всех экспериментах используется одна и та же схема оценивания:
+\begin{enumerate}
+	\item выбирается способ формирования изображения для преобразования Хафа: стандартный фильтр, один из вариантов CSSA;
+	\item по полученному изображению формируется множество активных элементов матрицы;
+	\item по этому множеству строится аккумуляторный массив метода Хафа;
+	\item по максимумам аккумулятора находятся оценки $(\hat{\rho},\hat{\theta})$.
+\end{enumerate}
+
+В дальнейшем качество методов сравнивается по среднеквадратическим ошибкам
+оценок параметров прямой. Если проводится $R$ независимых повторений
+эксперимента и истинные параметры равны $(\rho,\theta)$, то для полученных
+оценок $(\widehat{\rho}^{(r)},\widehat{\theta}^{(r)})$, $r=1,\dots,R$,
+используются метрики
+\[
+\operatorname{MSE}(\widehat{\rho})
+=
+\frac{1}{R}\sum_{r=1}^{R}
+\bigl(\widehat{\rho}^{(r)}-\rho\bigr)^2,
+\qquad
+\operatorname{MSE}(\widehat{\theta})
+=
+\frac{1}{R}\sum_{r=1}^{R}
+\bigl(\widehat{\theta}^{(r)}-\theta\bigr)^2.
+\]
+

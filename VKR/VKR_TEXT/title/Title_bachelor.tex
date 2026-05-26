@@ -1,0 +1,95 @@
+\ifdefined\TitleBachelorFromReport
+\let\TitleBachelorEndDocument\relax
+\else
+\documentclass[
+    specialist,
+    substylefile = additional/CourseWork/spbu.rtx,
+    subf,
+    href,
+    colorlinks=true,
+    12pt
+]{disser}
+
+\usepackage[a4paper,
+    mag=1000, includefoot,
+    left=2.5cm, right=1.5cm, top=2cm, bottom=2cm,
+    headsep=0.7cm, footskip=1cm
+]{geometry}
+
+\usepackage{mathtext}
+\usepackage{cmap}
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[english,russian]{babel}
+\usepackage{graphicx}
+\usepackage[unicode,pdftex]{hyperref}
+
+\hypersetup{
+    pdftitle={Анализ сингулярного спектра для препроцессинга при обнаружении прямых линий на изображении},
+    pdfauthor={Фалин Алексей Дмитриевич},
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue
+}
+
+\begin{document}
+\def\TitleBachelorEndDocument{\end{document}}
+\fi
+
+% -------------------- Титульный лист на русском языке --------------------
+
+\institution{%
+    Санкт-Петербургский государственный университет
+}
+
+\title{Выпускная квалификационная работа}
+
+\topic{Анализ сингулярного спектра для препроцессинга при обнаружении прямых линий на изображении}
+
+\author{\textsc{Фалин} Алексей Дмитриевич}
+
+\group{%
+    Уровень образования: бакалавриат\\
+    Направление 01.03.02 <<Прикладная математика и информатика>>\\
+    Основная образовательная программа СВ.5213.2022 <<Прикладная математика, программирование и искусственный интеллект>>
+}
+
+\sa{Н.\,Э.~Голяндина}
+\sastatus{Профессор, кафедра статистического моделирования}
+
+\rev{А.\,Н.~Абрамова}
+\revstatus{Руководитель группы, ООО \\ <<Инстамарт Технолоджи>>}
+
+\city{Санкт-Петербург}
+\date{2026}
+
+\maketitle
+
+% -------------------- Title page in English --------------------
+
+\institution{%
+    Saint Petersburg State University\\
+    Applied mathematics
+}
+
+\title{Graduation Project}
+
+\topic{Singular Spectrum Analysis for preprocessing in the detection of straight lines in images}
+
+\author{\textsc{Falin} Aleksei Dmitrievich}
+
+\group{}
+
+\sa{N.\,E.~Golyandina}
+\sastatus{Professor, Department of Statistical Modelling}
+
+\rev{A.\,N.~Abramova}
+\revstatus{Group Lead, Instamart Technology LLC}
+
+\city{Saint Petersburg}
+\date{2026}
+
+\maketitle[en]
+
+\TitleBachelorEndDocument

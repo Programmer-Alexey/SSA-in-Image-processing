@@ -1,0 +1,48 @@
+\usepackage[a4paper,
+    mag=1000, includefoot,
+    left=2.5cm, right=1.5cm, top=2cm, bottom=2cm,
+    headsep=0.7cm, footskip=1cm
+]{geometry}
+
+\usepackage{mathtext}
+\usepackage{amsmath,amssymb,amsthm,amscd,amsfonts}
+\usepackage{cmap}
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[english,russian]{babel}
+\usepackage{graphicx}
+\usepackage[unicode,pdftex]{hyperref}
+\usepackage{diagbox}
+\usepackage{float}
+\usepackage{tocloft}
+\usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator{\rank}{rank}
+\DeclareMathOperator{\NOKop}{НОК}
+\newcommand{\ii}{\mathrm{i}}
+\newcommand{\Hankel}{\mathcal H}
+
+\newtheorem{statement}{Утверждение}[section]
+\newtheorem{corollary}[statement]{Следствие}
+\newtheorem{remark}[statement]{Замечание}
+
+\algrenewcommand{\algorithmicrequire}{\textbf{Входные данные:}}
+\algrenewcommand{\algorithmicensure}{\textbf{Выходные данные:}}
+
+\graphicspath{
+    {assets/images/chapter1/}
+    {assets/images/chapter2/}
+}
+
+\hypersetup{
+    pdftitle={Анализ сингулярного спектра для препроцессинга при обнаружении прямых линий на изображении},
+    pdfauthor={Фалин Алексей Дмитриевич},
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue
+}

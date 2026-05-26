@@ -1,67 +1,29 @@
-\documentclass[12pt,specialist,subf,substylefile=additional/CourseWork/spbu.rtx]{disser}
+\documentclass[
+    specialist,
+    substylefile = additional/CourseWork/spbu.rtx,
+    subf,
+    href,
+    colorlinks=true,
+    12pt
+]{disser}
 
-\usepackage[a4paper,
-mag=1000, includefoot,
-left=2.5cm, right=1.5cm, top=2cm, bottom=2cm,
-headsep=0.7cm, footskip=1cm]{geometry}
-
-\usepackage{mathtext}
-\usepackage{amsmath,amssymb,amsthm,amscd,amsfonts}
-\usepackage{cmap}
-\usepackage[utf8]{inputenc}
-\usepackage[T2A]{fontenc}
-\usepackage[russian]{babel}
-\usepackage{graphicx}
-\usepackage[unicode,pdftex]{hyperref}
-\usepackage{diagbox}
-\usepackage{float}
-\usepackage{tocloft}
-\usepackage{subcaption}
-\usepackage{algorithm}
-\usepackage{algpseudocode}
-
-\DeclareMathOperator*{\argmin}{arg\,min}
-\DeclareMathOperator*{\argmax}{arg\,max}
-\newtheorem{statement}{Утверждение}[section]
-
-\algrenewcommand{\algorithmicrequire}{\textbf{Входные данные:}}
-\algrenewcommand{\algorithmicensure}{\textbf{Выходные данные:}}
-
-\graphicspath{
-	{images/introduction/}
-	{images/chapter1/}
-	{images/chapter2/}
-	{images/chapter3/}
-	{images/conclusion/}
-}
-
-\hypersetup{
-	pdftitle={Некоторые алгоритмы для обнаружения прямых линий на изображениях},
-	pdfauthor={Alex},
-	colorlinks=true,
-	linkcolor=black,
-	citecolor=black,
-	urlcolor=blue
-}
-
-% Для быстрой локальной сборки можно временно раскомментировать одну строку:
-% \includeonly{1_Algorithms_Description}
-% \includeonly{2_SSA_ROW}
+\input{preamble.tex}
 
 \begin{document}
-\input{Title}
-\maketitle
+
+\def\TitleBachelorFromReport{}
+\input{title/Title_bachelor.tex}
 
 \tableofcontents
 
 \chapter*{Введение}
 \addcontentsline{toc}{chapter}{Введение}
-\input{0_Introduction}
+\input{chapters/introduction/introduction}
 
-\include{1_Algorithms_Description}
-\include{2_SSA_ROW}
-\include{3_Comparison}
-\input{4_Conclusion}
+\include{chapters/chapter1_algorithms/chapter1_algorithms}
+\include{chapters/chapter2_cssa_preprocessing/chapter2_cssa_preprocessing}
+\include{chapters/chapter3_experiments/chapter3_experiments}
+\input{chapters/conclusion/conclusion}
 
 \bibliographystyle{ugost2008}
 \bibliography{additional/CourseWork/bibliography}

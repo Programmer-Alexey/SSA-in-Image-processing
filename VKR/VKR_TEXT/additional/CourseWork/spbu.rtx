@@ -30,18 +30,20 @@
 \fi
 
 \ifundeflength\firstskip{1.5cm}
-\ifundeflength\secondskip{1.5cm}
-\ifundeflength\thirdskip{3ex}
-\ifundeflength\fourthskip{1ex}
-\ifundeflength\fifthskip{1ex}
-\ifundeflength\sixthskip{2.5cm}
+\ifundeflength\secondskip{2.5cm}
+\ifundeflength\thirdskip{1.5ex}
+\ifundeflength\fourthskip{1.5ex}
+\ifundeflength\fifthskip{2cm}
+\ifundeflength\sixthskip{1.5cm}
 \ifundeflength\seventhskip{1ex}
+\ifundeflength\eightthskip{1ex}
 
 \setlength\fieldhshift{8.5cm}
 
-\def\titlefont{\Large\bfseries}
+\def\authorfont{\large\bfseries}
+\def\titlefont{\bfseries}
 \def\topiclabelfont{\large}
-\def\topicfont{\large\bfseries}
+\def\topicfont{\large\bfseries\scshape}
 
 \def\workname{\CYRR\cyra\cyrb\cyro\cyrt\cyra}
 
@@ -53,20 +55,21 @@
 \end{center}
 
 \vskip\firstskip
-\vskip\secondskip
 \begin{center}
-  {\titlefont\@title}
+  \vskip\secondskip
+  {\authorfont\@author}
   \vskip\thirdskip
-  {\@group}
+  {\titlefont\@title}
   \vskip\fourthskip
-  {\@author}
-  \vskip\fifthskip
   {\topicfont\@topic}
+  \vskip\fifthskip
+  {\@group}
 \end{center}
 \normalfont
 \vskip\sixthskip
 \hfill
 \begin{minipage}{.5\linewidth}
+    \begin{flushright}
     \ifx\@apname\empty\else
     \vskip\seventhskip
     \approved\\%
@@ -79,12 +82,14 @@
     \ifx\@sasnd\empty\else
     \vskip\seventhskip\diplomafield{sasnd}
     \fi
+    \vskip\eightthskip
     \ifx\@rev\empty\else
     \vskip\seventhskip\diplomafield{rev}
     \fi
     \ifx\@revsnd\empty\else
     \vskip\seventhskip\diplomafield{revsnd}
     \fi
+    \end{flushright}
 \end{minipage}
 \vfill
 \begin{center}
